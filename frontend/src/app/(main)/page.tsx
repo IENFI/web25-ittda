@@ -1,73 +1,55 @@
-import RecordList from './_components/RecordList';
 import WeekCalendar from './_components/WeekCalendar';
-import {
-  dehydrate,
-  HydrationBoundary,
-  QueryClient,
-} from '@tanstack/react-query';
-import { getCachedRecordPreviewList } from '@/lib/api/records';
-import { getCachedUserRecordStats } from '@/lib/api/profile';
-import { formatDateISO } from '@/lib/date';
+import HomeData from './_components/HomeData';
+import HomePageSkeleton from './_components/HomePageSkeleton';
+import { Suspense } from 'react';
+import AnnouncementModal from '@/components/AnnouncementModal';
+import WeekCalendarSkeleton from './_components/WeekCalendarSkeleton';
+import Coachmark from '@/components/Coachmark';
+import { HOME_COACHMARK_STEPS } from './_components/homeCoachmarkSteps';
 
-interface HomePageProps {
-  searchParams: Promise<{ date?: string }>;
+export async function generateMetadata() {
+  return {
+    title: '잇다-',
+    description: '친구들과 쉽게 공유하고 소통할 수 있는 새로운 방법, 잇다-',
+    openGraph: {
+      title: '잇다-',
+      description: '친구들과 쉽게 공유하고 소통할 수 있는 새로운 방법, 잇다-',
+      type: 'website',
+      images: [
+        {
+          url: `${process.env.NEXT_PUBLIC_CLIENT_URL}/thumbnail.png`,
+          width: 1200,
+          height: 630,
+          alt: '잇다- 서비스 설명',
+        },
+      ],
+    },
+  };
 }
 
-export default async function HomePage({ searchParams }: HomePageProps) {
-  const { date } = await searchParams;
-  const selectedDate = date || formatDateISO();
-
-  const queryClient = new QueryClient();
-  let currentStreak = 0;
-  let monthlyRecordCount = 0;
-
-  if (process.env.NEXT_PUBLIC_MOCK !== 'true') {
-    const [recordPreviews, streakData] = await Promise.all([
-      getCachedRecordPreviewList(selectedDate),
-      getCachedUserRecordStats(),
-    ]);
-
-    // QueryClient에 직접 넣어서 HydrationBoundary로 클라이언트에 전달
-    queryClient.setQueryData(
-      ['records', 'preview', selectedDate],
-      recordPreviews,
-    );
-
-    currentStreak = streakData.streak;
-    monthlyRecordCount = streakData.monthlyRecordingDays;
-  }
+export default function HomePage() {
   return (
-    <>
-      <WeekCalendar />
-      <div className="border-t-[0.5px] border-gray-100 dark:border-gray-800 flex w-full p-3 transition-colors duration-300 bg-transparent">
-        <div className="flex w-full justify-between gap-3 items-center border-r px-3 pr-5">
-          <span className="text-[12px]">오늘 작성</span>
-          <div className="flex justify-start items-center gap-1.5">
-            <span className="text-itta-point font-semibold">
-              {currentStreak}
-            </span>
-            <span className="text-[12px] font-medium text-gray-400">
-              일째 작성 중
-            </span>
-          </div>
-        </div>
-        <div className="flex w-full justify-between gap-3 items-center px-3 pl-5">
-          <span className="text-[12px]">이번달 기록</span>
-          <div className="flex justify-start items-center gap-1.5 ">
-            <span className="text-itta-point font-semibold">
-              {monthlyRecordCount}
-            </span>
-            <span className="text-[12px] font-medium text-gray-400">일</span>
-          </div>
-        </div>
+    <div className="flex flex-col h-screen overflow-hidden">
+      {/* AnnouncementModal은 서버에서 공지 표시 여부를 비동기로 판단하는 동안
+          아무것도 렌더링하지 않으면(fallback=null) 코치마크가 "공지 없음"으로
+          착각하고 먼저 떴다가, 판단이 끝나며 공지가 나타나면 밀려서 깜빡인다.
+          PWA 배너와 같은 방식으로 판단 중임을 알리는 마커를 남겨둔다. */}
+      <Suspense
+        fallback={
+          <div data-announcement-pending className="hidden" aria-hidden />
+        }
+      >
+        <AnnouncementModal />
+      </Suspense>
+      <Coachmark flowKey="home" steps={HOME_COACHMARK_STEPS} />
+      <Suspense fallback={<WeekCalendarSkeleton />}>
+        <WeekCalendar />
+      </Suspense>
+      <div className="flex-1 flex flex-col min-h-0">
+        <Suspense fallback={<HomePageSkeleton />}>
+          <HomeData />
+        </Suspense>
       </div>
-      <div className="flex-1 w-full p-5 space-y-6 pb-30 pt-7 transition-colors duration-300 dark:bg-[#121212] bg-[#F9F9F9]">
-        <div className="w-full flex flex-col gap-6">
-          <HydrationBoundary state={dehydrate(queryClient)}>
-            <RecordList />
-          </HydrationBoundary>
-        </div>
-      </div>
-    </>
+    </div>
   );
 }

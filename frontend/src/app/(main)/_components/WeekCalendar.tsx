@@ -1,32 +1,65 @@
 'use client';
 
-import { formatDateISO, getStartOfWeek, getWeekDays } from '@/lib/date';
+import {
+  formatDateISO,
+  getStartOfWeek,
+  getWeekDays,
+  parseLocalDate,
+} from '@/lib/date';
 import { cn } from '@/lib/utils';
 import { ChevronRight } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-export default function WeekCalendar() {
+export default function WeekCalendar({
+  basePath = '/',
+  monthBasePath = '/my',
+}: {
+  basePath?: string;
+  monthBasePath?: string;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // URL에서 date 파라미터 읽기, 없으면 오늘 날짜
-  const selectedDateStr = searchParams.get('date') || formatDateISO();
+  // URL에서 date 파라미터 읽기
+  const urlDateStr = searchParams.get('date') || formatDateISO();
+
+  // 클릭 즉시 강조 표시를 위한 낙관적 상태 (URL 커밋 전에도 즉시 반영)
+  const [optimisticDate, setOptimisticDate] = useState(urlDateStr);
+
+  // URL이 커밋되면 동기화
+  useEffect(() => {
+    setOptimisticDate(urlDateStr);
+  }, [urlDateStr]);
+
+  const selectedDateStr = optimisticDate;
 
   const [currentWeekStart, setCurrentWeekStart] = useState(() =>
-    getStartOfWeek(new Date(selectedDateStr)),
+    getStartOfWeek(parseLocalDate(urlDateStr)),
   );
   const [direction, setDirection] = useState(0); // -1: 이전, 1: 다음
+  const [isMounted, setIsMounted] = useState(false); // 초기 마운트 추적
   const [displayYearMonth, setDisplayYearMonth] = useState(() => {
-    const d = new Date(selectedDateStr);
+    const d = parseLocalDate(selectedDateStr);
     return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}`;
   });
+
+  // 초기 마운트 추적 (라우팅 후 첫 렌더링 시 애니메이션 스킵)
+  useEffect(() => {
+    const rAF = requestAnimationFrame(() => {
+      setIsMounted(true);
+    });
+
+    return () => {
+      cancelAnimationFrame(rAF);
+    };
+  }, []);
 
   // 연월 표시용 계산 (중앙 주차 기준)
   const calculateYearMonth = useCallback(
     (dateStr?: string) => {
-      const d = dateStr ? new Date(dateStr) : currentWeekStart;
+      const d = dateStr ? parseLocalDate(dateStr) : currentWeekStart;
       setDisplayYearMonth(
         `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}`,
       );
@@ -39,8 +72,9 @@ export default function WeekCalendar() {
     if (newDirection > 0) {
       const nextWeekStart = new Date(currentWeekStart);
       nextWeekStart.setDate(nextWeekStart.getDate() + 7);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      // new Date()는 서버 렌더링 시 서버의 로컬 타임존(UTC)을 기준으로 자정을 계산해
+      // 한국 시간 00~09시 사이엔 하루 전으로 어긋난다. formatDateISO는 Asia/Seoul로 고정 계산하므로 안전하다.
+      const today = parseLocalDate(formatDateISO());
 
       // 다음 주의 시작일이 오늘 이후라면 페이지네이션 차단
       if (nextWeekStart > today) {
@@ -83,9 +117,8 @@ export default function WeekCalendar() {
   );
 
   const handleTouchDate = (dateStr: string) => {
-    const selectedDate = new Date(dateStr);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const selectedDate = parseLocalDate(dateStr);
+    const today = parseLocalDate(formatDateISO());
     selectedDate.setHours(0, 0, 0, 0);
 
     // 미래 날짜는 선택 불가
@@ -93,26 +126,36 @@ export default function WeekCalendar() {
       return;
     }
 
+    // 클릭 즉시 강조 표시 반영
+    setOptimisticDate(dateStr);
+    // RecordList에 즉시 알림 (URL 커밋 전)
+    window.dispatchEvent(
+      new CustomEvent('itda:dateChange', { detail: dateStr }),
+    );
     // URL 쿼리 파라미터로 날짜 설정
-    router.push(`/?date=${dateStr}`);
+    router.replace(`${basePath}?date=${dateStr}`);
     calculateYearMonth(dateStr);
   };
 
   return (
     <div className="overflow-hidden">
-      <div
-        className="px-6 py-2 flex items-center gap-1 group cursor-pointer self-start"
-        onClick={() =>
-          router.push(`/my/month/${selectedDateStr.substring(0, 7)}`)
-        }
-      >
-        <span className="text-base font-semibold dark:text-white text-itta-black">
-          {displayYearMonth}
+      <div className="px-4 py-2 sm:px-6 flex items-center gap-1 group cursor-pointer self-start">
+        <span
+          className="flex items-center"
+          onClick={() =>
+            router.push(
+              `${monthBasePath}/month/${displayYearMonth.replace('.', '-')}`,
+            )
+          }
+        >
+          <span className="text-sm sm:text-base font-semibold dark:text-white text-itta-black">
+            {displayYearMonth}
+          </span>
+          <ChevronRight className="w-3.5 h-3.5 sm:w-4 sm:h-4 group-hover:translate-x-0.5 transition-transform dark:text-white text-itta-black" />
         </span>
-        <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform dark:text-white text-itta-black" />
       </div>
       <div className="relative h-24">
-        <div className="px-4 py-4 flex justify-between">
+        <div className="px-3 py-3 sm:px-4 sm:py-4 flex justify-between">
           {weekDays.map((item) => {
             const dayColor =
               item.dayName === '일'
@@ -124,10 +167,10 @@ export default function WeekCalendar() {
             return (
               <div
                 key={`header-${item.dateStr}`}
-                className="flex flex-col items-center gap-2 min-w-11"
+                className="flex flex-col items-center gap-1.5 sm:gap-2 min-w-10 sm:min-w-11"
               >
                 <span
-                  className="text-[11px] font-medium"
+                  className="text-[10px] sm:text-[11px] font-medium"
                   style={{ color: dayColor }}
                 >
                   {item.dayName}
@@ -144,24 +187,26 @@ export default function WeekCalendar() {
               key={currentWeekStart.toISOString()}
               custom={direction}
               variants={variants}
-              initial="enter"
+              initial={isMounted ? 'enter' : false}
               animate="center"
-              exit="exit"
-              transition={{ type: 'spring', stiffness: 300, damping: 33 }}
-              drag="x"
+              exit={isMounted ? 'exit' : undefined}
+              transition={
+                isMounted
+                  ? { type: 'spring', stiffness: 300, damping: 33 }
+                  : { duration: 0 }
+              }
+              drag={isMounted ? 'x' : false}
               dragConstraints={{ left: 0, right: 0 }}
               onDragEnd={(e, { offset }) => {
                 const swipe = offset.x;
-                if (swipe < -50)
-                  paginate(1); // 왼쪽으로 밀면 다음주
-                else if (swipe > 50) paginate(-1); // 오른쪽으로 밀면 이전주
+                if (swipe < -50) paginate(1);
+                else if (swipe > 50) paginate(-1);
               }}
-              className="absolute inset-0 px-4 flex justify-between touch-none select-none bg-transparent cursor-grab"
+              className="absolute inset-0 px-3 sm:px-4 flex justify-between touch-none select-none bg-transparent cursor-grab"
             >
               {weekDays.map((item) => {
                 const isSelected = selectedDateStr === item.dateStr;
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
+                const today = parseLocalDate(formatDateISO());
                 const isFuture = item.date > today;
 
                 return (
@@ -170,7 +215,7 @@ export default function WeekCalendar() {
                     onClick={() => handleTouchDate(item.dateStr)}
                     disabled={isFuture}
                     className={cn(
-                      'flex items-center justify-center min-w-11 transition-transform',
+                      'flex items-center justify-center min-w-10 sm:min-w-11 transition-transform',
                       isFuture
                         ? 'cursor-not-allowed opacity-40'
                         : 'active:scale-95 cursor-pointer',
@@ -178,7 +223,7 @@ export default function WeekCalendar() {
                   >
                     <div
                       className={cn(
-                        'w-9 h-9 flex items-center justify-center rounded-xl text-sm font-medium transition-all dark:text-gray-200',
+                        'w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center rounded-xl text-xs sm:text-sm font-medium transition-all dark:text-gray-200',
                         isSelected
                           ? 'dark:bg-white dark:text-[#121212] bg-itta-black text-white shadow-md'
                           : item.isToday

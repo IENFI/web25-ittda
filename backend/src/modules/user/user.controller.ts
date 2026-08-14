@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Patch,
   Param,
@@ -20,12 +21,15 @@ import { User } from '@/common/decorators/user.decorator';
 
 import { GetMonthlyArchiveQueryDto } from './dto/get-monthly-archive.query.dto';
 import { ApiWrappedOkResponse } from '@/common/swagger/api-wrapped-response.decorator';
-import { MonthRecordResponseDto } from './dto/month-record.response.dto';
-import { GetMonthImagesResponseDto } from './dto/get-month-images.response.dto';
+import {
+  MonthRecordResponseDto,
+  PaginatedMonthRecordResponseDto,
+} from './dto/month-record.response.dto';
 import { UpdateMonthCoverBodyDto } from './dto/update-month-cover.body.dto';
 import { GetDailyArchiveQueryDto } from './dto/get-daily-archive.query.dto';
 import { DayRecordResponseDto } from './dto/day-record.response.dto';
 import { GetArchivesMonthCoverQueryDto } from './dto/get-archives-month-cover.query.dto';
+import { UserCoverCandidatesResponseDto } from './dto/user-cover-candidates.response.dto';
 
 import { parseYearMonth } from '@/common/utils/parseDateValidator';
 
@@ -47,45 +51,34 @@ export class UserController {
     summary: '사용자 월별 아카이브 조회',
     description: '로그인한 사용자의 월별 기록 요약 목록을 조회합니다.',
   })
-  @ApiWrappedOkResponse({ type: MonthRecordResponseDto, isArray: true })
+  @ApiWrappedOkResponse({ type: Object })
   async getMonthlyArchive(
     @User() user: MyJwtPayload,
     @Query() query: GetMonthlyArchiveQueryDto,
-  ): Promise<{ data: MonthRecordResponseDto[] }> {
+  ): Promise<{
+    data: MonthRecordResponseDto[] | PaginatedMonthRecordResponseDto;
+  }> {
     const userId = user?.sub;
     if (!userId) {
       throw new UnauthorizedException('Access token is required.');
+    }
+
+    if (query.allYears) {
+      const data = await this.userService.getMonthlyArchiveInfinite(
+        userId,
+        query.cursor,
+        query.limit,
+      );
+
+      return { data };
     }
 
     const data = await this.userService.getMonthlyArchive(
       userId,
-      query.year ?? new Date().getFullYear(), // 기본값: 올해
+      query.year ?? new Date().getFullYear(),
     );
 
     return { data };
-  }
-
-  @Get('archives/months/:yyyy_mm/images')
-  @ApiOperation({
-    summary: '사용자 월별 이미지 조회',
-    description:
-      '특정 월의 모든 기록에서 사용된 이미지 목록을 조회합니다. (deprecated: archives/monthcover 권장)',
-  })
-  @ApiParam({ name: 'yyyy_mm', description: '연-월 (예: 2026-01)' })
-  @ApiWrappedOkResponse({ type: GetMonthImagesResponseDto })
-  async getMonthImages(
-    @User() user: MyJwtPayload,
-    @Param('yyyy_mm') yyyy_mm: string,
-  ): Promise<{ data: GetMonthImagesResponseDto }> {
-    const userId = user?.sub;
-    if (!userId) {
-      throw new UnauthorizedException('Access token is required.');
-    }
-
-    const { year, month } = parseYearMonth(yyyy_mm);
-
-    const images = await this.userService.getMonthImages(userId, year, month);
-    return { data: { images } };
   }
 
   @Patch('archives/months/:yyyy_mm/cover')
@@ -107,13 +100,30 @@ export class UserController {
 
     const { year, month } = parseYearMonth(yyyy_mm);
 
-    await this.userService.updateMonthCover(
-      userId,
-      year,
-      month,
-      body.coverAssetId,
-    );
-    return { data: { coverAssetId: body.coverAssetId } };
+    await this.userService.updateMonthCover(userId, year, month, body.assetId);
+    return { data: { assetId: body.assetId } };
+  }
+
+  @Delete('archives/months/:yyyy_mm/cover')
+  @ApiOperation({
+    summary: '사용자 월별 커버 초기화',
+    description: '특정 월의 카드 커버를 기본값으로 되돌립니다.',
+  })
+  @ApiParam({ name: 'yyyy_mm', description: '연-월 (예: 2026-01)' })
+  @ApiWrappedOkResponse({ type: Object })
+  async resetMonthCover(
+    @User() user: MyJwtPayload,
+    @Param('yyyy_mm') yyyy_mm: string,
+  ) {
+    const userId = user?.sub;
+    if (!userId) {
+      throw new UnauthorizedException('Access token is required.');
+    }
+
+    const { year, month } = parseYearMonth(yyyy_mm);
+    await this.userService.resetMonthCover(userId, year, month);
+
+    return { data: { coverAssetId: null } };
   }
 
   @Get('archives/days')
@@ -163,18 +173,22 @@ export class UserController {
     summary: '사용자 월별 커버 후보 이미지 조회',
     description: '특정 월의 모든 기록에서 사용된 이미지 목록을 조회합니다.',
   })
-  @ApiWrappedOkResponse({ type: String, isArray: true })
+  @ApiWrappedOkResponse({ type: UserCoverCandidatesResponseDto })
   async getArchivesMonthCover(
     @User() user: MyJwtPayload,
     @Query() query: GetArchivesMonthCoverQueryDto,
-  ): Promise<{ data: string[] }> {
+  ): Promise<{ data: UserCoverCandidatesResponseDto }> {
     const userId = user?.sub;
     if (!userId) {
       throw new UnauthorizedException('Access token is required.');
     }
 
     const { year, month } = parseYearMonth(query.year);
-    const data = await this.userService.getMonthImages(userId, year, month);
+    const data = await this.userService.getMonthCoverCandidates(
+      userId,
+      year,
+      month,
+    );
 
     return { data };
   }

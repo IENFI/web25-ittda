@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
@@ -8,31 +9,44 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, Repository } from 'typeorm';
+import { randomUUID } from 'crypto';
 import type { Point } from 'geojson';
 
 import { Post } from './entity/post.entity';
 import { PostBlock } from './entity/post-block.entity';
 import { PostContributor } from './entity/post-contributor.entity';
 import { PostDraft } from './entity/post-draft.entity';
+import { PostDraftMedia } from './entity/post-draft-media.entity';
 import { PostMedia, PostMediaKind } from './entity/post-media.entity';
 import { User } from '@/modules/user/entity/user.entity';
 import { Group } from '@/modules/group/entity/group.entity';
+import { GroupMonthCover } from '@/modules/group/entity/group-month-cover.entity';
 import { GroupMember } from '@/modules/group/entity/group_member.entity';
+import { UserMonthCover } from '@/modules/user/entity/user-month-cover.entity';
 import { CreatePostDto } from './dto/create-post.dto';
 import { EditPostDto } from './dto/edit-post.dto';
 import { PostDetailDto } from './dto/post-detail.dto';
 import { PostScope } from '@/enums/post-scope.enum';
 import { PostBlockType } from '@/enums/post-block-type.enum';
+import { MediaService } from '@/modules/media/media.service';
+import { SharedPostResponseDto } from './dto/shared-post.dto';
 import { GroupRoleEnum } from '@/enums/group-role.enum';
 import { PostContributorRole } from '@/enums/post-contributor-role.enum';
 import { validateBlocks } from './validator/blocks.validator';
+import { validateBlockValues } from './validator/block-values.validator';
+import { validatePostTitle } from './validator/post-title.validator';
 import { BlockValueMap } from './types/post-block.types';
 import { extractMetaFromBlocks } from './validator/meta.extractor';
 import { resolveEventAtFromBlocks } from './validator/event-at.resolver';
 import { PresenceService } from './collab/presence.service';
+import { PostDraftGateway } from './post-draft.gateway';
+import { GroupActivityService } from '@/modules/group/service/group-activity.service';
+import { GroupActivityType } from '@/enums/group-activity-type.enum';
 
 @Injectable()
 export class PostService {
+  private readonly logger = new Logger(PostService.name);
+
   constructor(
     @InjectRepository(Post)
     private readonly postRepository: Repository<Post>,
@@ -42,6 +56,8 @@ export class PostService {
     private readonly postContributorRepository: Repository<PostContributor>,
     @InjectRepository(PostDraft)
     private readonly postDraftRepository: Repository<PostDraft>,
+    @InjectRepository(PostDraftMedia)
+    private readonly postDraftMediaRepository: Repository<PostDraftMedia>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     @InjectRepository(Group)
@@ -49,6 +65,9 @@ export class PostService {
     @InjectRepository(GroupMember)
     private readonly groupMemberRepository: Repository<GroupMember>,
     private readonly presenceService: PresenceService,
+    private readonly postDraftGateway: PostDraftGateway,
+    private readonly groupActivityService: GroupActivityService,
+    private readonly mediaService: MediaService,
   ) {}
 
   /**
@@ -57,7 +76,9 @@ export class PostService {
    */
   async createPost(ownerUserId: string, dto: CreatePostDto) {
     // 블록 검증 → 메타 추출 → eventAt 생성 순서로 선행 처리
+    validatePostTitle(dto.title);
     validateBlocks(dto.blocks);
+    validateBlockValues(dto.blocks);
 
     const owner = await this.userRepository.findOne({
       where: { id: ownerUserId },
@@ -97,6 +118,18 @@ export class PostService {
         where: { id: dto.groupId },
       });
       if (!group) throw new NotFoundException('Group not found');
+    }
+    if (dto.scope === PostScope.GROUP && dto.groupId) {
+      const member = await this.groupMemberRepository.findOne({
+        where: { groupId: dto.groupId, userId: ownerUserId },
+        select: { role: true },
+      });
+      if (!member) {
+        throw new ForbiddenException('Not a group member.');
+      }
+      if (member.role === GroupRoleEnum.VIEWER) {
+        throw new ForbiddenException('Insufficient permission.');
+      }
     }
 
     const meta = extractMetaFromBlocks(dto.blocks);
@@ -208,13 +241,23 @@ export class PostService {
       },
     );
 
-    return this.findOne(postId);
+    if (dto.scope === PostScope.GROUP && dto.groupId) {
+      await this.groupActivityService.recordActivity({
+        groupId: dto.groupId,
+        type: GroupActivityType.POST_CREATE,
+        actorIds: [ownerUserId],
+        refId: postId,
+        meta: { title: dto.title },
+      });
+    }
+
+    return this.findOne(postId, ownerUserId);
   }
 
   /**
    * 게시글 상세 조회: Post 기본 정보에 블록과 기여자 정보를 합쳐 반환한다.
    */
-  async findOne(postId: string) {
+  async findOne(postId: string, requesterId: string) {
     const post = await this.postRepository.findOne({
       where: { id: postId, deletedAt: IsNull() },
       relations: ['ownerUser', 'group'],
@@ -228,11 +271,68 @@ export class PostService {
       where: { postId },
       relations: ['user'],
     });
-    const contributorDtos = contributors.map((c) => ({
-      userId: c.userId,
-      role: c.role,
-      nickname: c.user?.nickname,
-    }));
+    const activeContributors = contributors.filter(
+      (contributor): contributor is PostContributor & { user: User } =>
+        Boolean(contributor.user),
+    );
+    const groupMemberMap = new Map<
+      string,
+      { nicknameInGroup?: string | null; profileMediaId?: string | null }
+    >();
+    if (post.scope === PostScope.GROUP && post.groupId) {
+      const members = await this.groupMemberRepository.find({
+        where: activeContributors.map((c) => ({
+          groupId: post.groupId as string,
+          userId: c.userId,
+        })),
+        select: ['userId', 'nicknameInGroup', 'profileMediaId'],
+      });
+      members.forEach((member) => {
+        groupMemberMap.set(member.userId, {
+          nicknameInGroup: member.nicknameInGroup ?? null,
+          profileMediaId: member.profileMediaId ?? null,
+        });
+      });
+    }
+
+    const contributorDtos = activeContributors.map((c) => {
+      const groupMember = groupMemberMap.get(c.userId);
+      return {
+        userId: c.userId,
+        role: c.role,
+        nickname: c.user.nickname ?? null,
+        groupNickname: groupMember?.nicknameInGroup ?? null,
+        profileImageId: c.user.profileImageId ?? null,
+        groupProfileImageId: groupMember?.profileMediaId ?? null,
+      };
+    });
+
+    const isOwner = post.ownerUserId === requesterId;
+    let permission: 'ADMIN' | 'EDITOR' | 'VIEWER' | 'OWNER' | null = null;
+
+    if (post.scope === PostScope.GROUP && post.groupId) {
+      const member = await this.groupMemberRepository.findOne({
+        where: { groupId: post.groupId, userId: requesterId },
+        select: { role: true },
+      });
+      permission = member?.role ?? null;
+    } else {
+      permission = isOwner ? 'OWNER' : null;
+    }
+
+    let hasActiveEditDraft: boolean | undefined;
+    if (post.scope === PostScope.GROUP && post.groupId) {
+      const activeEditDraft = await this.postDraftRepository.findOne({
+        where: {
+          groupId: post.groupId,
+          targetPostId: postId,
+          kind: 'EDIT',
+          isActive: true,
+        },
+        select: { id: true },
+      });
+      hasActiveEditDraft = Boolean(activeEditDraft);
+    }
 
     const dto: PostDetailDto = {
       id: post.id,
@@ -253,6 +353,9 @@ export class PostService {
         },
       })),
       contributors: contributorDtos,
+      permission,
+      hasActiveEditDraft,
+      shareToken: post.shareToken ?? null,
     };
     return dto;
   }
@@ -283,6 +386,108 @@ export class PostService {
     if (!contributor) {
       throw new ForbiddenException('You do not have access to this post');
     }
+  }
+
+  private async ensureCanManageShare(
+    postId: string,
+    userId: string,
+    select: { shareToken?: true } = {},
+  ) {
+    const post = await this.postRepository.findOne({
+      where: { id: postId, deletedAt: IsNull() },
+      select: {
+        id: true,
+        ownerUserId: true,
+        groupId: true,
+        scope: true,
+        ...select,
+      },
+    });
+    if (!post) throw new NotFoundException('Post not found');
+    if (post.ownerUserId === userId) return post;
+
+    if (post.scope === PostScope.GROUP && post.groupId) {
+      const member = await this.groupMemberRepository.findOne({
+        where: { groupId: post.groupId, userId },
+        select: { role: true },
+      });
+      if (
+        member &&
+        (member.role === GroupRoleEnum.ADMIN ||
+          member.role === GroupRoleEnum.EDITOR)
+      ) {
+        return post;
+      }
+    }
+    throw new ForbiddenException('You do not have access to share this post');
+  }
+
+  async createShareToken(postId: string, userId: string): Promise<string> {
+    const post = await this.ensureCanManageShare(postId, userId, {
+      shareToken: true,
+    });
+
+    if (post.shareToken) return post.shareToken;
+
+    const shareToken = randomUUID();
+    await this.postRepository.update(postId, { shareToken });
+    return shareToken;
+  }
+
+  async revokeShareToken(postId: string, userId: string): Promise<void> {
+    await this.ensureCanManageShare(postId, userId);
+
+    await this.postRepository.update(postId, { shareToken: null });
+  }
+
+  async findByShareToken(shareToken: string): Promise<SharedPostResponseDto> {
+    const post = await this.postRepository.findOne({
+      where: { shareToken, deletedAt: IsNull() },
+    });
+    if (!post) throw new NotFoundException('Shared post not found');
+
+    const blocks = await this.postBlockRepository.find({
+      where: { postId: post.id },
+      order: { layoutRow: 'ASC', layoutCol: 'ASC', layoutSpan: 'ASC' },
+    });
+
+    // IMAGE 블록에서 mediaId 수집 후 URL 일괄 resolve
+    const mediaIds: string[] = [];
+    for (const block of blocks) {
+      if (
+        block.type === PostBlockType.IMAGE &&
+        block.value &&
+        typeof block.value === 'object' &&
+        'mediaIds' in block.value
+      ) {
+        const ids = (block.value as { mediaIds?: string[] }).mediaIds ?? [];
+        mediaIds.push(...ids);
+      }
+    }
+
+    const resolvedMediaUrls: Record<string, string> = {};
+    await Promise.all(
+      mediaIds.map(async (mediaId) => {
+        const result = await this.mediaService.resolveUrlPublic(mediaId);
+        if (result.ok) {
+          resolvedMediaUrls[mediaId] = result.url;
+        }
+      }),
+    );
+
+    return {
+      id: post.id,
+      title: post.title,
+      createdAt: post.createdAt,
+      updatedAt: post.updatedAt,
+      blocks: blocks.map((b) => ({
+        id: b.id,
+        type: b.type,
+        value: b.value,
+        layout: { row: b.layoutRow, col: b.layoutCol, span: b.layoutSpan },
+      })),
+      resolvedMediaUrls,
+    };
   }
 
   async getEditSnapshot(postId: string, userId: string): Promise<EditPostDto> {
@@ -319,8 +524,24 @@ export class PostService {
     dto: EditPostDto,
   ): Promise<PostDetailDto> {
     const post = await this.getPostForEdit(postId, requesterId);
+    const beforeTitle = post.title;
+    const groupId = post.groupId ?? null;
+    if (post.scope === PostScope.GROUP && post.groupId) {
+      const member = await this.groupMemberRepository.findOne({
+        where: { groupId: post.groupId, userId: requesterId },
+        select: { role: true },
+      });
+      if (!member) {
+        throw new ForbiddenException('Not a group member.');
+      }
+      if (member.role === GroupRoleEnum.VIEWER) {
+        throw new ForbiddenException('Insufficient permission.');
+      }
+    }
 
+    validatePostTitle(dto.title);
     validateBlocks(dto.blocks);
+    validateBlockValues(dto.blocks);
     this.ensureNoDuplicateBlockIds(dto.blocks);
 
     const meta = extractMetaFromBlocks(dto.blocks);
@@ -404,7 +625,21 @@ export class PostService {
       }
     });
 
-    return this.findOne(postId);
+    if (post.scope === PostScope.GROUP && groupId) {
+      const meta =
+        beforeTitle !== dto.title
+          ? { beforeTitle, afterTitle: dto.title }
+          : null;
+      await this.groupActivityService.recordActivity({
+        groupId,
+        type: GroupActivityType.POST_UPDATE,
+        actorIds: [requesterId],
+        refId: postId,
+        meta,
+      });
+    }
+
+    return this.findOne(postId, requesterId);
   }
 
   /**
@@ -415,10 +650,55 @@ export class PostService {
       where: { id: postId, deletedAt: IsNull() },
     });
     if (!post) throw new NotFoundException('Post not found');
-    if (post.ownerUserId !== requesterId) {
+    if (post.scope === PostScope.GROUP && post.groupId) {
+      const member = await this.groupMemberRepository.findOne({
+        where: { groupId: post.groupId, userId: requesterId },
+        select: { role: true },
+      });
+      if (!member) {
+        throw new ForbiddenException('Not a group member.');
+      }
+      if (member.role === GroupRoleEnum.VIEWER) {
+        throw new ForbiddenException('Insufficient permission.');
+      }
+      const isAdmin = member.role === GroupRoleEnum.ADMIN;
+      const isOwner = post.ownerUserId === requesterId;
+      if (!isAdmin && !isOwner) {
+        throw new ForbiddenException(
+          'Only the owner or admin can delete this post',
+        );
+      }
+    } else if (post.ownerUserId !== requesterId) {
       throw new ForbiddenException('Only the owner can delete this post');
     }
     await this.postRepository.softDelete(postId);
+
+    const activeEditDrafts = await this.postDraftRepository.find({
+      where: { targetPostId: postId, isActive: true, kind: 'EDIT' },
+      select: { id: true },
+    });
+    if (activeEditDrafts.length > 0) {
+      const draftIds = activeEditDrafts.map((draft) => draft.id);
+      await this.postDraftRepository.update(
+        { id: In(draftIds) },
+        { isActive: false },
+      );
+      await this.postDraftMediaRepository.delete({ draftId: In(draftIds) });
+      draftIds.forEach((draftId) => {
+        if (this.presenceService.getMembersArray(draftId).length > 0) {
+          this.postDraftGateway.broadcastDraftInvalidated(
+            draftId,
+            'POST_DELETED',
+          );
+        }
+      });
+    }
+
+    void this.cleanupCoversForDeletedPost(
+      postId,
+      post.ownerUserId,
+      post.groupId,
+    );
 
     if (post.groupId) {
       const latest = await this.postRepository.findOne({
@@ -429,6 +709,96 @@ export class PostService {
       await this.groupRepository.update(post.groupId, {
         lastActivityAt: latest?.updatedAt ?? null,
       });
+
+      await this.groupActivityService.recordActivity({
+        groupId: post.groupId,
+        type: GroupActivityType.POST_DELETE,
+        actorIds: [requesterId],
+        refId: postId,
+        meta: { title: post.title },
+      });
+    }
+  }
+
+  private async cleanupCoversForDeletedPost(
+    postId: string,
+    ownerUserId: string,
+    groupId?: string | null,
+  ) {
+    try {
+      const postMediaRepo =
+        this.postRepository.manager.getRepository(PostMedia);
+      const groupMonthCoverRepo =
+        this.groupRepository.manager.getRepository(GroupMonthCover);
+      const userMonthCoverRepo =
+        this.userRepository.manager.getRepository(UserMonthCover);
+
+      const mediaRows = await postMediaRepo.find({
+        where: { postId, kind: PostMediaKind.BLOCK },
+        select: { mediaId: true },
+      });
+      const mediaIds = Array.from(
+        new Set(mediaRows.map((row) => row.mediaId).filter(Boolean)),
+      );
+
+      const updateTasks: Array<Promise<unknown>> = [];
+
+      if (mediaIds.length > 0 && groupId) {
+        updateTasks.push(
+          this.groupRepository
+            .createQueryBuilder()
+            .update()
+            .set({ coverMediaId: null, coverSourcePostId: null })
+            .where('id = :groupId', { groupId })
+            .andWhere('coverMediaId IN (:...mediaIds)', { mediaIds })
+            .execute(),
+          groupMonthCoverRepo
+            .createQueryBuilder()
+            .update()
+            .set({ coverAssetId: null, sourcePostId: null })
+            .where('groupId = :groupId', { groupId })
+            .andWhere('coverAssetId IN (:...mediaIds)', { mediaIds })
+            .execute(),
+        );
+      }
+
+      if (mediaIds.length > 0) {
+        updateTasks.push(
+          userMonthCoverRepo
+            .createQueryBuilder()
+            .update()
+            .set({ coverAssetId: null })
+            .where('userId = :userId', { userId: ownerUserId })
+            .andWhere('coverAssetId IN (:...mediaIds)', { mediaIds })
+            .execute(),
+        );
+      }
+
+      if (groupId) {
+        updateTasks.push(
+          this.groupRepository
+            .createQueryBuilder()
+            .update()
+            .set({ coverMediaId: null, coverSourcePostId: null })
+            .where('id = :groupId', { groupId })
+            .andWhere('coverSourcePostId = :postId', { postId })
+            .execute(),
+          groupMonthCoverRepo
+            .createQueryBuilder()
+            .update()
+            .set({ coverAssetId: null, sourcePostId: null })
+            .where('groupId = :groupId', { groupId })
+            .andWhere('sourcePostId = :postId', { postId })
+            .execute(),
+        );
+      }
+
+      await Promise.all(updateTasks);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.warn(
+        `Failed to cleanup covers (groupId=${groupId ?? 'N/A'}, postId=${postId}): ${message}`,
+      );
     }
   }
 

@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -25,21 +26,36 @@ import { PostDraftGateway } from './post-draft.gateway';
 import { PublishDraftDto } from './dto/publish-draft.dto';
 import { PostScope } from '@/enums/post-scope.enum';
 import { GroupRoleEnum } from '@/enums/group-role.enum';
+import { GroupActivityType } from '@/enums/group-activity-type.enum';
 import { PostContributorRole } from '@/enums/post-contributor-role.enum';
 import { PostBlockType } from '@/enums/post-block-type.enum';
 import { CreatePostDto } from './dto/create-post.dto';
 import { validateBlocks } from './validator/blocks.validator';
+import { validateBlockValues } from './validator/block-values.validator';
+import { validatePostTitle } from './validator/post-title.validator';
 import { BlockValueMap } from './types/post-block.types';
 import { extractMetaFromBlocks } from './validator/meta.extractor';
 import { resolveEventAtFromBlocks } from './validator/event-at.resolver';
+import { GroupActivityService } from '@/modules/group/service/group-activity.service';
+
+type GroupDraftSnapshot = Pick<
+  CreatePostDto,
+  'title' | 'blocks' | 'groupId' | 'scope'
+>;
+type PublishBlockOverride = NonNullable<
+  PublishDraftDto['blocksOverride']
+>[number];
 
 @Injectable()
 export class PostPublishService {
+  private readonly logger = new Logger(PostPublishService.name);
+
   constructor(
     @InjectRepository(Post)
     private readonly postRepository: Repository<Post>,
     private readonly draftStateService: DraftStateService,
     private readonly postDraftGateway: PostDraftGateway,
+    private readonly groupActivityService: GroupActivityService,
   ) {}
 
   async publishGroupDraft(
@@ -47,13 +63,15 @@ export class PostPublishService {
     groupId: string,
     payload: PublishDraftDto,
   ) {
-    const { draftId, draftVersion } = payload;
+    const { draftId, draftVersion, titleOverride, blocksOverride } = payload;
     if (!this.draftStateService.startPublishing(draftId)) {
       throw new ConflictException('Draft is already publishing.');
     }
     this.postDraftGateway.broadcastDraftPublishStarted(draftId);
 
     try {
+      let ownerActorId: string | null = null;
+      let createdTitle: string | null = null;
       const postId = await this.postRepository.manager.transaction(
         async (manager) => {
           const draftRepo = manager.getRepository(PostDraft);
@@ -71,7 +89,7 @@ export class PostPublishService {
             lock: { mode: 'pessimistic_write' },
           });
           if (!draft) throw new NotFoundException('Draft not found');
-          if (draft.version !== draftVersion) {
+          if (draftVersion !== draft.version) {
             throw new ConflictException('Draft version mismatch.');
           }
 
@@ -102,9 +120,16 @@ export class PostPublishService {
             draft.snapshot,
             groupId,
           );
+          this.applyPublishOverrides(snapshot, titleOverride, blocksOverride);
 
           const snapshotBlocks = snapshot.blocks;
-          validateBlocks(snapshotBlocks);
+          ownerActorId = draft.ownerActorId;
+          createdTitle = snapshot.title;
+          validatePostTitle(snapshot.title);
+          validateBlocks(snapshotBlocks, {
+            layoutErrorMessage: 'Layout is invalid.',
+          });
+          validateBlockValues(snapshotBlocks);
           this.ensureBlockIds(snapshotBlocks);
           this.ensureNoDuplicateBlockIds(snapshotBlocks);
 
@@ -131,10 +156,6 @@ export class PostPublishService {
             rating: meta.rating ?? null,
           });
           const saved = await postRepo.save(created);
-
-          await groupRepo.update(groupId, {
-            lastActivityAt: saved.updatedAt,
-          });
 
           const touchedBy = this.draftStateService.getTouchedBy(draftId);
           const contributorIds = Array.from(
@@ -186,10 +207,27 @@ export class PostPublishService {
         },
       );
 
+      const touchedBy = this.draftStateService.getTouchedBy(draftId);
+      const actorIds = Array.from(
+        new Set([ownerActorId, ...touchedBy].filter(Boolean) as string[]),
+      );
       this.draftStateService.clearTouchedBy(draftId);
+      this.updateGroupLastActivity(groupId, postId);
       this.postDraftGateway.broadcastDraftPublished(draftId, postId);
+      await this.groupActivityService.recordActivity({
+        groupId,
+        type: GroupActivityType.POST_COLLAB_COMPLETE,
+        actorIds,
+        refId: postId,
+        meta: createdTitle ? { title: createdTitle } : null,
+      });
       return postId;
     } catch (error) {
+      const currentVersion = await this.getDraftCurrentVersion(draftId);
+      this.postDraftGateway.broadcastDraftPublishEnded(
+        draftId,
+        currentVersion ?? undefined,
+      );
       if (error instanceof QueryFailedError) {
         const dbError = error as { code?: string };
         if (dbError.code === '23505') {
@@ -208,19 +246,21 @@ export class PostPublishService {
     postId: string,
     payload: PublishDraftDto,
   ) {
-    const { draftId, draftVersion } = payload;
+    const { draftId, draftVersion, titleOverride, blocksOverride } = payload;
     if (!this.draftStateService.startPublishing(draftId)) {
       throw new ConflictException('Draft is already publishing.');
     }
 
     try {
+      let draftOwnerId: string | null = null;
+      let beforeTitle: string | null = null;
+      let afterTitle: string | null = null;
       await this.postRepository.manager.transaction(async (manager) => {
         const draftRepo = manager.getRepository(PostDraft);
         const postRepo = manager.getRepository(Post);
         const blockRepo = manager.getRepository(PostBlock);
         const contributorRepo = manager.getRepository(PostContributor);
         const mediaRepo = manager.getRepository(PostMedia);
-        const groupRepo = manager.getRepository(Group);
         const memberRepo = manager.getRepository(GroupMember);
 
         const draft = await draftRepo.findOne({
@@ -234,9 +274,10 @@ export class PostPublishService {
           lock: { mode: 'pessimistic_write' },
         });
         if (!draft) throw new NotFoundException('Draft not found');
-        if (draft.version !== draftVersion) {
+        if (draftVersion !== draft.version) {
           throw new ConflictException('Draft version mismatch.');
         }
+        draftOwnerId = draft.ownerActorId;
 
         const post = await postRepo.findOne({
           where: { id: postId, deletedAt: IsNull() },
@@ -249,6 +290,7 @@ export class PostPublishService {
           },
         });
         if (!post) throw new NotFoundException('Post not found');
+        beforeTitle = post.title;
 
         // NOTE: edit publish는 snapshot에 groupId를 받기 때문에
         // 클라이언트 오염 방지를 위해 groupId 일치 검사를 유지한다.
@@ -268,9 +310,16 @@ export class PostPublishService {
         }
 
         const snapshot = this.parseGroupDraftSnapshot(draft.snapshot, groupId);
+        this.applyPublishOverrides(snapshot, titleOverride, blocksOverride);
 
+        afterTitle = snapshot.title;
+
+        validatePostTitle(snapshot.title);
         const blocks = snapshot.blocks;
-        validateBlocks(blocks);
+        validateBlocks(blocks, {
+          layoutErrorMessage: 'Layout is invalid.',
+        });
+        validateBlockValues(blocks);
         this.ensureBlockIds(blocks);
         this.ensureNoDuplicateBlockIds(blocks);
 
@@ -344,16 +393,33 @@ export class PostPublishService {
 
         draft.isActive = false;
         await draftRepo.save(draft);
-
-        await groupRepo.update(groupId, {
-          lastActivityAt: saved.updatedAt,
-        });
       });
 
+      const touchedBy = this.draftStateService.getTouchedBy(draftId);
+      const actorIds = Array.from(
+        new Set([draftOwnerId, ...touchedBy].filter(Boolean) as string[]),
+      );
       this.draftStateService.clearTouchedBy(draftId);
+      this.updateGroupLastActivity(groupId, postId);
       this.postDraftGateway.broadcastDraftPublished(draftId, postId);
+      const meta = {
+        beforeTitle: beforeTitle ?? null,
+        afterTitle: afterTitle ?? null,
+      };
+      await this.groupActivityService.recordActivity({
+        groupId,
+        type: GroupActivityType.POST_EDIT_COMPLETE,
+        actorIds,
+        refId: postId,
+        meta,
+      });
       return postId;
     } catch (error) {
+      const currentVersion = await this.getDraftCurrentVersion(draftId);
+      this.postDraftGateway.broadcastDraftPublishEnded(
+        draftId,
+        currentVersion ?? undefined,
+      );
       if (error instanceof QueryFailedError) {
         const dbError = error as { code?: string };
         if (dbError.code === '23505') {
@@ -363,6 +429,44 @@ export class PostPublishService {
       throw error;
     } finally {
       this.draftStateService.finishPublishing(draftId);
+    }
+  }
+
+  private updateGroupLastActivity(groupId: string, postId: string) {
+    void this.postRepository.manager
+      .getRepository(Group)
+      .createQueryBuilder()
+      .update()
+      .set({
+        lastActivityAt: () =>
+          '(SELECT updated_at FROM posts WHERE id = :postId)',
+      })
+      .where('id = :groupId', { groupId, postId })
+      .execute()
+      .catch((error) => {
+        const message =
+          error instanceof Error ? error.message : 'unknown error';
+        this.logger.warn(
+          `Failed to update group lastActivityAt (groupId=${groupId}, postId=${postId}): ${message}`,
+        );
+      });
+  }
+
+  private async getDraftCurrentVersion(draftId: string) {
+    try {
+      const draft = await this.postRepository.manager
+        .getRepository(PostDraft)
+        .findOne({
+          where: { id: draftId },
+          select: { version: true },
+        });
+      return draft?.version ?? null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.warn(
+        `Failed to load draft version (draftId=${draftId}): ${message}`,
+      );
+      return null;
     }
   }
 
@@ -391,7 +495,7 @@ export class PostPublishService {
   private parseGroupDraftSnapshot(
     snapshot: unknown,
     groupId: string,
-  ): Pick<CreatePostDto, 'title' | 'blocks' | 'groupId' | 'scope'> {
+  ): GroupDraftSnapshot {
     const candidate = snapshot as Partial<CreatePostDto> | null | undefined;
     if (
       !candidate ||
@@ -404,10 +508,49 @@ export class PostPublishService {
     if (candidate.groupId && candidate.groupId !== groupId) {
       throw new BadRequestException('groupId mismatch.');
     }
-    return candidate as Pick<
-      CreatePostDto,
-      'title' | 'blocks' | 'groupId' | 'scope'
-    >;
+    return candidate as GroupDraftSnapshot;
+  }
+
+  private applyPublishOverrides(
+    snapshot: GroupDraftSnapshot,
+    titleOverride?: string,
+    blocksOverride?: PublishDraftDto['blocksOverride'],
+  ) {
+    if (titleOverride && titleOverride.trim()) {
+      snapshot.title = titleOverride.trim();
+    }
+
+    // publish 직전의 최신 클라이언트 블록 배열을 최종본으로 사용한다.
+    // 버전 일치 검사를 통과한 경우에만 허용해 오래된 스냅샷의 블록 복원을 막는다.
+    if (!blocksOverride) {
+      return;
+    }
+
+    const prevBlocks = snapshot.blocks;
+    snapshot.blocks = blocksOverride.map((override) =>
+      this.mergePublishOverrideBlock(prevBlocks, override),
+    ) as typeof snapshot.blocks;
+  }
+
+  private mergePublishOverrideBlock(
+    prevBlocks: GroupDraftSnapshot['blocks'],
+    override: PublishBlockOverride,
+  ) {
+    const existing = prevBlocks.find((block) => block.id === override.id);
+    if (existing) {
+      return {
+        ...existing,
+        value: override.value as unknown as typeof existing.value,
+        layout: override.layout as unknown as typeof existing.layout,
+      };
+    }
+
+    return {
+      id: override.id,
+      type: override.type,
+      value: override.value,
+      layout: override.layout,
+    };
   }
 
   private buildBlockMediaEntries(

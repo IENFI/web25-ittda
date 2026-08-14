@@ -50,3 +50,13 @@ storybook-static
 # AI
 .agents/*
 .claude/*
+# Sentry Config File
+.env.sentry-build-plugin
+
+# lighthouse
+.lighthouseci/e2e/.auth/
+playwright-report/
+test-results/
+
+# playwright auth state (setup 단계에서 생성되는 세션 토큰)
+e2e/.auth/

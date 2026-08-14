@@ -1,15 +1,23 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, SelectQueryBuilder, Brackets } from 'typeorm';
+import { Repository, SelectQueryBuilder, Brackets, In } from 'typeorm';
 import { Post } from '@/modules/post/entity/post.entity';
 import { PostBlock } from '@/modules/post/entity/post-block.entity';
-import { PostMediaKind } from '@/modules/post/entity/post-media.entity';
+import { PostContributor } from '@/modules/post/entity/post-contributor.entity';
 import { PostBlockType } from '@/enums/post-block-type.enum';
+import { BlockValueMap } from '@/modules/post/types/post-block.types';
 import {
   SearchPostsDto,
   PaginatedSearchResponseDto,
   SearchResultItemDto,
 } from './dto/search.dto';
+import { DateTime } from 'luxon';
+
+type DecodedSearchCursor = {
+  eventAt: Date;
+  id: string;
+  count?: number;
+};
 
 @Injectable()
 export class SearchService {
@@ -38,19 +46,51 @@ export class SearchService {
     if (dto.tags && dto.tags.length > 0) {
       this.trackTags(userId, dto.tags);
     }
+
+    const isDateOnly = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+    let startDate = dto.startDate;
+    let endDate = dto.endDate;
+
+    if (startDate && !endDate) {
+      // 단일 날짜 선택: 해당 날짜의 시작~끝으로 범위 확장
+      if (isDateOnly(startDate)) {
+        const startOfDay = DateTime.fromISO(startDate, {
+          zone: 'Asia/Seoul',
+        }).startOf('day');
+        const endOfDay = startOfDay.endOf('day');
+        startDate = startOfDay.toISO() ?? undefined;
+        endDate = endOfDay.toISO() ?? undefined;
+      } else {
+        const startDt = DateTime.fromISO(startDate, { setZone: true });
+        if (startDt.isValid) {
+          endDate = startDt.endOf('day').toISO() ?? undefined;
+        }
+      }
+    } else if (startDate && endDate) {
+      // 기간 선택: date-only 문자열이면 한국 시간 기준으로 시작/끝 시각으로 변환
+      startDate = this.normalizeDateOnlyBoundary(startDate, 'start');
+      endDate = this.normalizeDateOnlyBoundary(endDate, 'end');
+    }
     const query = this.postRepository
       .createQueryBuilder('post')
-      .leftJoinAndSelect(
-        'post.postMedia',
-        'postMedia',
-        'postMedia.kind = :thumbnailKind',
-        {
-          thumbnailKind: PostMediaKind.THUMBNAIL,
-        },
-      )
-      .leftJoinAndSelect('postMedia.media', 'media')
       .leftJoin('post.ownerUser', 'ownerUser')
-      .where('post.ownerUserId = :userId', { userId }) // 기본적으로 내 글만 검색 (비즈니스 로직에 따라 변경 가능)
+      .where(
+        new Brackets((qb) => {
+          qb.where('post.ownerUserId = :userId', { userId }).orWhere(
+            (subQb: SelectQueryBuilder<Post>) => {
+              const sub = subQb
+                .subQuery()
+                .select('1')
+                .from(PostContributor, 'pc')
+                .where('pc.postId = post.id')
+                .andWhere('pc.userId = :userId')
+                .getQuery();
+              return `EXISTS ${sub}`;
+            },
+            { userId },
+          );
+        }),
+      )
       .andWhere('post.deletedAt IS NULL');
 
     // Keyword Search (Title or Content Blocks)
@@ -68,18 +108,23 @@ export class SearchService {
     }
 
     // Date Range Search
-    if (dto.startDate) {
+    if (startDate) {
       query.andWhere('post.eventAt >= :startDate', {
-        startDate: dto.startDate,
+        startDate,
       });
     }
-    if (dto.endDate) {
-      query.andWhere('post.eventAt <= :endDate', { endDate: dto.endDate });
+    if (endDate) {
+      query.andWhere('post.eventAt <= :endDate', { endDate });
     }
 
     // Tag Search
     if (dto.tags && dto.tags.length > 0) {
       query.andWhere('post.tags && :tags', { tags: dto.tags });
+    }
+
+    // Emotion Search
+    if (dto.emotions && dto.emotions.length > 0) {
+      query.andWhere('post.emotion && :emotions', { emotions: dto.emotions });
     }
 
     // Location Search (Nearby)
@@ -94,8 +139,12 @@ export class SearchService {
       );
     }
 
+    const decodedCursor = this.decodeCursor(cursor);
+    const count =
+      decodedCursor?.count ?? (await query.clone().distinct(true).getCount());
+
     // Cursor Pagination Logic
-    this.applyCursor(query, cursor);
+    this.applyCursor(query, decodedCursor);
 
     // Sorting: Most recent first
     query.orderBy('post.eventAt', 'DESC').addOrderBy('post.id', 'DESC');
@@ -108,9 +157,32 @@ export class SearchService {
     const hasNextPage = posts.length > limit;
     const items = posts.slice(0, limit);
 
+    const postIds = items.map((post) => post.id);
+    const previewMediaMap = new Map<string, string[]>();
+    if (postIds.length > 0) {
+      const imageBlocks = await this.postRepository.manager.find(PostBlock, {
+        where: {
+          postId: In(postIds),
+          type: PostBlockType.IMAGE,
+        },
+        order: {
+          layoutRow: 'ASC',
+          layoutCol: 'ASC',
+          layoutSpan: 'ASC',
+        },
+      });
+      imageBlocks.forEach((block) => {
+        const val = block.value as BlockValueMap[typeof PostBlockType.IMAGE];
+        const mediaIds = val.mediaIds ?? [];
+        const existing = previewMediaMap.get(block.postId) ?? [];
+        const merged = [...new Set([...existing, ...mediaIds])].slice(0, 5);
+        previewMediaMap.set(block.postId, merged);
+      });
+    }
+
     const resultItems: SearchResultItemDto[] = await Promise.all(
       items.map(async (post) => {
-        const thumbnail = post.postMedia?.[0]?.media;
+        const previewMediaIds = previewMediaMap.get(post.id) ?? [];
 
         // Snippet extraction (first text block)
         const firstTextBlock = await this.postRepository.manager.findOne(
@@ -131,7 +203,7 @@ export class SearchService {
 
         return {
           id: post.id,
-          thumbnailUrl: thumbnail?.url,
+          previewMediaIds,
           title: post.title,
           eventAt: post.eventAt!,
           location: locationBlock
@@ -152,39 +224,78 @@ export class SearchService {
     if (hasNextPage) {
       const lastItem = items[items.length - 1];
       if (lastItem.eventAt) {
-        nextCursor = this.encodeCursor(lastItem.eventAt, lastItem.id);
+        nextCursor = this.encodeCursor(lastItem.eventAt, lastItem.id, count);
       }
     }
 
     return {
       items: resultItems,
+      count,
       nextCursor,
     };
   }
 
-  private applyCursor(query: SelectQueryBuilder<Post>, cursor?: string) {
+  private applyCursor(
+    query: SelectQueryBuilder<Post>,
+    cursor: DecodedSearchCursor | null,
+  ) {
     if (!cursor) return;
+
+    query.andWhere(
+      new Brackets((qb) => {
+        qb.where('post.eventAt < :eventAt', {
+          eventAt: cursor.eventAt,
+        }).orWhere('post.eventAt = :eventAt AND post.id < :id', {
+          eventAt: cursor.eventAt,
+          id: cursor.id,
+        });
+      }),
+    );
+  }
+
+  private decodeCursor(cursor?: string): DecodedSearchCursor | null {
+    if (!cursor) return null;
 
     try {
       const decoded = Buffer.from(cursor, 'base64').toString('utf-8');
-      const [eventAtStr, id] = decoded.split('|');
-      const eventAt = new Date(eventAtStr);
+      const [eventAtStr, id, countStr] = decoded.split('|');
+      if (!eventAtStr || !id) return null;
 
-      query.andWhere(
-        new Brackets((qb) => {
-          qb.where('post.eventAt < :eventAt', { eventAt }).orWhere(
-            'post.eventAt = :eventAt AND post.id < :id',
-            { eventAt, id },
-          );
-        }),
-      );
+      const eventAt = new Date(eventAtStr);
+      if (Number.isNaN(eventAt.getTime())) return null;
+
+      const parsedCount = Number.parseInt(countStr ?? '', 10);
+      const count =
+        Number.isInteger(parsedCount) && parsedCount >= 0
+          ? parsedCount
+          : undefined;
+
+      return { eventAt, id, count };
     } catch {
-      // Ignore invalid cursor
+      // TODO: Replace permissive fallback with explicit 400 (INVALID_CURSOR)
+      // when cursor is provided but cannot be decoded/parsed.
+      // TODO: Add cursor signature (e.g., HMAC) to prevent tampering.
+      return null;
     }
   }
 
-  private encodeCursor(eventAt: Date, id: string): string {
-    const value = `${eventAt.toISOString()}|${id}`;
+  private normalizeDateOnlyBoundary(value: string, boundary: 'start' | 'end') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+
+    const dateTime = DateTime.fromISO(value, { zone: 'Asia/Seoul' });
+    return (
+      (boundary === 'start'
+        ? dateTime.startOf('day')
+        : dateTime.endOf('day')
+      ).toISO() ?? value
+    );
+  }
+
+  private encodeCursor(eventAt: Date, id: string, count?: number): string {
+    const value =
+      count === undefined
+        ? `${eventAt.toISOString()}|${id}`
+        : `${eventAt.toISOString()}|${id}|${count}`;
     return Buffer.from(value).toString('base64');
   }
 

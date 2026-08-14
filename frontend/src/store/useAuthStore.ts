@@ -10,6 +10,7 @@ interface State {
   userType: UserType | null;
   userId: string | null;
   guestSessionId: string | null;
+  guestAccessToken: string | null;
   guestSessionExpiresAt: string | null;
   isLoggedIn: boolean;
 }
@@ -22,10 +23,11 @@ interface Action {
 }
 
 export const guestCookieKey = 'x-guest-session-id';
+export const guestTokenKey = 'x-guest-access-token';
 
 // 쿠키에 세션 ID를 설정하는 헬퍼 함수
-const setGuestCookie = (sessionId: string) => {
-  Cookies.set(guestCookieKey, sessionId, {
+const setGuestCookie = (key: string, sessionId: string) => {
+  Cookies.set(key, sessionId, {
     expires: 3, // 3일 동안 유지
     path: '/', // 모든 경로에서 쿠키 전송
     sameSite: 'Lax', // 소셜 로그인 리다이렉트 시 쿠키 전송 허용
@@ -37,6 +39,7 @@ export const useAuthStore = create<State & Action>()(
     (set, get) => ({
       userType: null,
       userId: null,
+      guestAccessToken: null,
       guestSessionId: null,
       guestSessionExpiresAt: null,
       isLoggedIn: false,
@@ -52,6 +55,7 @@ export const useAuthStore = create<State & Action>()(
               userId: socialUser.id,
               isLoggedIn: true,
               guestSessionId: null,
+              guestAccessToken: null,
               guestSessionExpiresAt: null,
             });
           });
@@ -78,16 +82,19 @@ export const useAuthStore = create<State & Action>()(
       },
 
       setGuestInfo: (guest) => {
-        requestAnimationFrame(() => {
-          set({
-            guestSessionId: guest.guestSessionId,
-            guestSessionExpiresAt: guest.guestSessionId,
-            userType: 'guest',
-            isLoggedIn: true,
-          });
-
-          setGuestCookie(guest.guestSessionId);
+        // window.location.href 이동 전에 쿠키와 Zustand 상태가 반드시 저장되어야 함.
+        // requestAnimationFrame 안에서 처리하면 페이지 언로드 시 실행되지 않아
+        // 다음 페이지에서 토큰을 읽지 못해 소켓 연결 불가 → 실시간 기능 전체 불작동.
+        set({
+          guestAccessToken: guest.guestAccessToken,
+          guestSessionId: guest.guestSessionId,
+          guestSessionExpiresAt: guest.guestSessionId,
+          userType: 'guest',
+          userId: null,
+          isLoggedIn: true,
         });
+        setGuestCookie(guestCookieKey, guest.guestSessionId);
+        setGuestCookie(guestTokenKey, guest.guestAccessToken);
       },
 
       logout: () => {
@@ -95,13 +102,15 @@ export const useAuthStore = create<State & Action>()(
           userType: null,
           userId: null,
           isLoggedIn: false,
+          guestAccessToken: null,
           guestSessionId: null,
           guestSessionExpiresAt: null,
         });
         // 로그아웃 시 쿠키 명시적 삭제
         Cookies.remove(guestCookieKey);
+        Cookies.remove(guestTokenKey);
       },
     }),
-    { name: 'auth-storage' },
+    { name: 'auth-storage', skipHydration: true },
   ),
 );

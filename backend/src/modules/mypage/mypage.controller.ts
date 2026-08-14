@@ -71,7 +71,7 @@ export class MyPageController {
     const user = await this.myPageService.updateProfile(
       userId,
       dto.nickname,
-      dto.profileImageUrl,
+      dto.profileImageId,
     );
     const stats = await this.statsService.getUserStats(userId);
     return { userId, user, stats };
@@ -108,6 +108,6 @@ export class MyPageController {
   @ApiWrappedOkResponse({ type: Object })
   async withdraw(@Req() req: RequestWithUser): Promise<void> {
     const userId = req.user.sub;
-    await this.myPageService.softDeleteUser(userId);
+    await this.myPageService.withdraw(userId);
   }
 }

@@ -25,9 +25,13 @@ import { GroupRoleEnum } from '@/enums/group-role.enum';
 import type { BlockMoveListCommand, PatchCommand } from './collab/types';
 import { PostBlockDto } from './dto/post-block.dto';
 import { PostBlockType } from '@/enums/post-block-type.enum';
+import { GroupActivityService } from '@/modules/group/service/group-activity.service';
+import { GroupActivityType } from '@/enums/group-activity-type.enum';
 
 @Injectable()
 export class PostDraftService {
+  private static readonly CREATE_DRAFT_LIMIT = 5;
+
   constructor(
     @InjectRepository(PostDraft)
     private readonly postDraftRepository: Repository<PostDraft>,
@@ -39,49 +43,78 @@ export class PostDraftService {
     private readonly groupRepository: Repository<Group>,
     @InjectRepository(GroupMember)
     private readonly groupMemberRepository: Repository<GroupMember>,
+    private readonly groupActivityService: GroupActivityService,
   ) {}
 
   async getOrCreateGroupCreateDraft(
     groupId: string,
     actorId: string,
   ): Promise<PostDraft> {
-    const group = await this.groupRepository.findOne({
-      where: { id: groupId },
-      select: { id: true },
-    });
-    if (!group) throw new NotFoundException('Group not found');
     await this.ensureGroupEditor(groupId, actorId);
 
-    const existing = await this.postDraftRepository.findOne({
-      where: { groupId, isActive: true, kind: 'CREATE' },
-    });
-    if (existing) return existing;
+    return this.postDraftRepository.manager.transaction(async (manager) => {
+      const groupRepo = manager.getRepository(Group);
+      const draftRepo = manager.getRepository(PostDraft);
 
-    const draft = this.postDraftRepository.create({
-      groupId,
-      ownerActorId: actorId,
-      kind: 'CREATE',
-      snapshot: this.buildDefaultDraftSnapshot(groupId),
-    });
+      const group = await groupRepo.findOne({
+        where: { id: groupId },
+        select: { id: true },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!group) throw new NotFoundException('Group not found');
 
-    try {
-      return await this.postDraftRepository.save(draft);
-    } catch (error) {
-      const dbError = error as { code?: string };
-      if (error instanceof QueryFailedError && dbError.code === '23505') {
-        const concurrent = await this.postDraftRepository.findOne({
-          where: { groupId, isActive: true, kind: 'CREATE' },
-        });
-        if (concurrent) return concurrent;
-        throw new ConflictException(
-          'Active draft already exists for this group.',
-        );
+      const activeDrafts = await draftRepo
+        .createQueryBuilder('draft')
+        .setLock('pessimistic_write')
+        .where('draft.groupId = :groupId', { groupId })
+        .andWhere('draft.isActive = true')
+        .andWhere("draft.kind = 'CREATE'")
+        .getMany();
+
+      const usedSlots = new Set<number>();
+      activeDrafts.forEach((draft) => {
+        if (typeof draft.createSlot === 'number') {
+          usedSlots.add(draft.createSlot);
+        }
+      });
+
+      let availableSlot: number | null = null;
+      for (
+        let slot = 1;
+        slot <= PostDraftService.CREATE_DRAFT_LIMIT;
+        slot += 1
+      ) {
+        if (!usedSlots.has(slot)) {
+          availableSlot = slot;
+          break;
+        }
       }
-      if (error instanceof QueryFailedError) {
-        throw new InternalServerErrorException('Failed to create draft.');
+
+      if (!availableSlot) {
+        throw new ConflictException('Active create draft limit reached.');
       }
-      throw error;
-    }
+
+      const draft = draftRepo.create({
+        groupId,
+        ownerActorId: actorId,
+        kind: 'CREATE',
+        createSlot: availableSlot,
+        snapshot: this.buildDefaultDraftSnapshot(groupId),
+      });
+
+      try {
+        return await draftRepo.save(draft);
+      } catch (error) {
+        const dbError = error as { code?: string };
+        if (error instanceof QueryFailedError && dbError.code === '23505') {
+          throw new ConflictException('Active create draft limit reached.');
+        }
+        if (error instanceof QueryFailedError) {
+          throw new InternalServerErrorException('Failed to create draft.');
+        }
+        throw error;
+      }
+    });
   }
 
   async getGroupDraft(
@@ -138,7 +171,21 @@ export class PostDraftService {
     });
 
     try {
-      return await this.postDraftRepository.save(draft);
+      const saved = await this.postDraftRepository.save(draft);
+      const eventDate = post.eventAt
+        ? DateTime.fromJSDate(post.eventAt).setZone('Asia/Seoul')
+        : null;
+      await this.groupActivityService.recordActivity({
+        groupId,
+        type: GroupActivityType.POST_EDIT_START,
+        actorIds: [actorId],
+        refId: postId,
+        meta: {
+          title: post.title,
+          eventDate: eventDate ? eventDate.toFormat('yyyy-MM-dd') : null,
+        },
+      });
+      return saved;
     } catch (error) {
       const dbError = error as { code?: string };
       if (error instanceof QueryFailedError && dbError.code === '23505') {
@@ -207,7 +254,7 @@ export class PostDraftService {
   }
 
   private buildDefaultDraftSnapshot(groupId: string): Record<string, unknown> {
-    const now = DateTime.utc();
+    const now = DateTime.now().setZone('Asia/Seoul');
     const snapshot: Omit<CreatePostDto, 'thumbnailMediaId'> = {
       scope: PostScope.GROUP,
       groupId,
@@ -368,10 +415,7 @@ export class PostDraftService {
             if (!target) {
               throw new NotFoundException('Block not found.');
             }
-            this.ensureBlockValueValid({
-              ...target,
-              layout: move.layout,
-            });
+            // BLOCK_MOVE는 레이아웃만 변경하므로 값 검증 생략
             target.layout = move.layout;
           }
           break;
@@ -428,6 +472,28 @@ export class PostDraftService {
   }
 
   private ensureBlockValueValid(block: PostBlockDto) {
+    if (block.type === PostBlockType.MOOD) {
+      const mood = (block.value as { mood?: unknown } | undefined)?.mood;
+      if (mood === undefined || mood === null || mood === '') {
+        return;
+      }
+    }
+    if (block.type === PostBlockType.MEDIA) {
+      const media = block.value as
+        | { title?: unknown; type?: unknown; externalId?: unknown }
+        | undefined;
+      if (
+        !media ||
+        typeof media.title !== 'string' ||
+        media.title.trim().length === 0 ||
+        typeof media.type !== 'string' ||
+        media.type.trim().length === 0 ||
+        typeof media.externalId !== 'string' ||
+        media.externalId.trim().length === 0
+      ) {
+        return;
+      }
+    }
     const candidate = plainToInstance(PostBlockDto, block); // 일반 객체를 DTO 인스턴스로 변환하는 함수
     const errors = validateSync(candidate, { forbidUnknownValues: false }); // class-validator로 즉시(동기) 검증하는 함수
     if (errors.length === 0) return;

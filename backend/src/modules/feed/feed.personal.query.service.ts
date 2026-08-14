@@ -5,6 +5,8 @@ import { Repository } from 'typeorm';
 
 import { Post } from '../post/entity/post.entity';
 import { PostBlock } from '../post/entity/post-block.entity';
+import { PostContributor } from '../post/entity/post-contributor.entity';
+import { GroupMember } from '../group/entity/group_member.entity';
 import { PostScope } from '@/enums/post-scope.enum';
 import { GetFeedQueryDto } from './dto/get-feed.query.dto';
 import { buildFeedCards, dayRange } from './feed.helpers';
@@ -18,6 +20,10 @@ export class FeedPersonalQueryService {
     private readonly postRepo: Repository<Post>,
     @InjectRepository(PostBlock)
     private readonly postBlockRepo: Repository<PostBlock>,
+    @InjectRepository(PostContributor)
+    private readonly postContributorRepo: Repository<PostContributor>,
+    @InjectRepository(GroupMember)
+    private readonly groupMemberRepo: Repository<GroupMember>,
   ) {}
 
   async getPersonalFeedForUser(userId: string, query: GetFeedQueryDto) {
@@ -32,6 +38,7 @@ export class FeedPersonalQueryService {
     postsQb.select([
       'p.id',
       'p.groupId',
+      'p.ownerUserId',
       'p.eventAt',
       'p.createdAt',
       'p.updatedAt',
@@ -42,6 +49,13 @@ export class FeedPersonalQueryService {
     ]);
 
     const posts = await postsQb.getMany();
-    return buildFeedCards(posts, this.postBlockRepo, this.logger);
+    return buildFeedCards(
+      posts,
+      this.postBlockRepo,
+      this.postContributorRepo,
+      this.groupMemberRepo,
+      this.logger,
+      userId,
+    );
   }
 }

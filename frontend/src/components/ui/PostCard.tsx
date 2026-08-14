@@ -1,7 +1,7 @@
 'use client';
 
 import { ImageIcon } from 'lucide-react';
-import { ReactNode, useMemo, useState } from 'react';
+import { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import AssetImage from '../AssetImage';
 
@@ -12,6 +12,7 @@ export interface BaseCardProps {
   imageAlt?: string;
   className?: string;
   children: ReactNode;
+  priorityLoad?: boolean;
 }
 
 export interface CardOverlayProps {
@@ -48,21 +49,15 @@ export interface CardBadgeProps {
  */
 export function PostCard({
   onClick,
-  height = 'h-50',
+  height = 'h-42 sm:h-50',
   imageUrl,
   imageAlt = '',
   className = '',
   children,
+  priorityLoad,
 }: BaseCardProps) {
-  const [fallbackIndex] = useState(() => Math.floor(Math.random() * 8) + 1);
-
-  const baseImage = useMemo(() => {
-    // id가 없으면 위에서 생성한 랜덤 인덱스 이미지
-    return `/gemini_base${fallbackIndex}.png`;
-  }, [fallbackIndex]);
-
   return (
-    <div className={`group relative ${height}`}>
+    <div className={cn('group relative', height)}>
       <div
         role="button"
         tabIndex={0}
@@ -75,19 +70,28 @@ export function PostCard({
           className,
         )}
       >
-        {imageUrl ? (
-          <AssetImage
-            assetId={imageUrl}
-            alt={imageAlt}
-            width={100}
-            height={100}
-            className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105 dark:opacity-60 opacity-90"
-          />
-        ) : (
-          <div className={cn('flex items-center justify-center', className)}>
-            <ImageIcon className="w-6 h-6 text-gray-400" />
-          </div>
-        )}
+        <div suppressHydrationWarning>
+          {imageUrl ? (
+            <AssetImage
+              assetId={imageUrl}
+              alt={imageAlt}
+              fill
+              className="object-cover transition-transform duration-700 group-hover:scale-105 dark:opacity-60 opacity-90"
+              priorityLoad={priorityLoad}
+            />
+          ) : (
+            <div
+              className="absolute inset-0 bg-gray-100 dark:bg-[#252525] flex items-center justify-center"
+              style={{
+                backgroundImage:
+                  'radial-gradient(circle, rgba(0,0,0,0.07) 1px, transparent 1px)',
+                backgroundSize: '18px 18px',
+              }}
+            >
+              <ImageIcon className="w-6 h-6 text-gray-400" />
+            </div>
+          )}
+        </div>
 
         {/* 그라디언트 오버레이 */}
         <div className="absolute inset-0 bg-linear-to-t from-black/80 via-black/10 to-transparent" />
@@ -113,7 +117,7 @@ PostCard.Overlay = function CardOverlay({
   return (
     <div
       className={cn(
-        'relative z-10 p-4 w-full space-y-1',
+        'relative z-10 p-3 sm:p-4 w-full min-w-0 overflow-hidden space-y-1',
         positionClasses[position],
         className,
       )}
@@ -167,7 +171,7 @@ PostCard.Badge = function CardBadge({
   return (
     <div
       className={cn(
-        'px-2 py-0.5 rounded-lg text-[8px] font-bold shrink-0',
+        'px-1.5 py-0.5 rounded-lg text-[8px] font-bold shrink-0',
         variantClasses[variant],
         className,
       )}
@@ -242,7 +246,7 @@ PostCard.Meta = function CardMeta({
   return (
     <div
       className={cn(
-        'flex items-center gap-1 text-white/50 text-[9px]',
+        'flex items-center gap-1 text-white/50 text-[9px] overflow-hidden min-w-0',
         className,
       )}
     >

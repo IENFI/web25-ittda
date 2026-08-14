@@ -14,6 +14,14 @@ import {
   type PostDraftKind,
 } from '@/enums/post-draft-kind.enum';
 
+@Index('uq_post_drafts_active_group_edit', ['groupId', 'targetPostId'], {
+  unique: true,
+  where: `is_active = true AND kind = 'EDIT'`,
+})
+@Index('uq_post_drafts_active_group_create_slot', ['groupId', 'createSlot'], {
+  unique: true,
+  where: `is_active = true AND kind = 'CREATE'`,
+})
 @Entity('post_drafts')
 export class PostDraft {
   @PrimaryGeneratedColumn('uuid')
@@ -40,6 +48,9 @@ export class PostDraft {
 
   @Column({ name: 'target_post_id', type: 'uuid', nullable: true })
   targetPostId: string | null;
+
+  @Column({ name: 'create_slot', type: 'int', nullable: true })
+  createSlot: number | null;
 
   @Column({ type: 'jsonb', default: () => "'{}'::jsonb" })
   snapshot: Record<string, unknown>;

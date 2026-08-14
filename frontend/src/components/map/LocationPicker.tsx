@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Image from 'next/image';
-import { Loader2, Locate } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import {
   APIProvider,
   Map,
@@ -11,12 +11,13 @@ import {
   ColorScheme,
 } from '@vis.gl/react-google-maps';
 import { Button } from '@/components/ui/button';
-import { useGeolocation } from '@/hooks/useGeolocation';
 import { LocationValue } from '@/lib/types/recordField';
 import { useTheme } from 'next-themes';
 import { MapSearchBar } from './MapSearchBar';
 import { searchPlacesByKeyword } from '@/lib/utils/googleMaps';
 import { cn } from '@/lib/utils';
+import * as Sentry from '@sentry/nextjs';
+import { logger } from '@/lib/utils/logger';
 
 export type LocationMode = 'search' | 'post';
 
@@ -26,6 +27,9 @@ export interface LocationPickerProps {
   initialCenter?: { lat: number; lng: number };
   className?: string;
 }
+
+// 기본 중심 좌표 (충북 음성 부근 - 우리나라가 모두 보이도록)
+const DEFAULT_CENTER = { lat: 36.0, lng: 127.9 };
 
 export function LocationPicker({
   mode,
@@ -60,10 +64,10 @@ function LocationPickerContent({
     null,
   );
   const isSelectedFromSearch = useRef(false);
-
-  const { latitude: geoLat, longitude: geoLng } = useGeolocation({
-    reverseGeocode: true,
-  });
+  // GPS 없이 항상 즉시 주소 갱신 허용
+  const isInitialLocationLoaded = useRef(true);
+  const mapIdleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const placesLib = useMapsLibrary('places');
   const geometryLib = useMapsLibrary('geometry');
@@ -81,32 +85,19 @@ function LocationPickerContent({
     if (!placesServiceRef.current) {
       placesServiceRef.current = new placesLib.PlacesService(mapRef.current);
     }
-  }, [placesLib, mapRef.current]);
+  }, [placesLib]);
 
+  // 컴포넌트 언마운트 시 pending requests와 타이머 정리
   useEffect(() => {
-    if (geoLat && geoLng && mapRef.current) {
-      // 지도 이동
-      mapRef.current.panTo({ lat: geoLat, lng: geoLng });
-
-      // 이동한 위치의 주소 강제 갱신
-      const updateInitialAddress = async () => {
-        setIsAddressLoading(true);
-        try {
-          const placeName = await findNearbyPlace(geoLat, geoLng);
-          const addr = await reverseGeocode(geoLat, geoLng);
-
-          setCenterAddress(addr);
-          setCenterPlaceName(placeName || '');
-        } catch (error) {
-          console.error('Initial Geocode Error:', error);
-        } finally {
-          setIsAddressLoading(false);
-        }
-      };
-
-      updateInitialAddress();
-    }
-  }, [geoLat, geoLng]);
+    return () => {
+      if (mapIdleTimeoutRef.current) {
+        clearTimeout(mapIdleTimeoutRef.current);
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   const handleSearch = async (keyword: string) => {
     if (!keyword.trim() || !mapRef.current || !placesLib) return;
@@ -114,13 +105,14 @@ function LocationPickerContent({
       placesServiceRef.current = new placesLib.PlacesService(mapRef.current);
     }
     const currentPlacesServiceRef = placesServiceRef.current;
-    const currentCenter = mapRef.current.getCenter();
+    const searchCenter = mapRef.current.getCenter();
+
     setIsProcessing(true);
 
     const results = await searchPlacesByKeyword(
       currentPlacesServiceRef,
       keyword,
-      currentCenter,
+      searchCenter,
     );
     setSearchResults(results.slice(0, 10));
     setIsProcessing(false);
@@ -132,10 +124,18 @@ function LocationPickerContent({
         reject(new Error('Google Maps API not loaded'));
         return;
       }
+
+      // 5초 timeout 설정
+      const timeoutId = setTimeout(() => {
+        reject(new Error('Geocoding timeout'));
+      }, 5000);
+
       const geocoder = new google.maps.Geocoder();
       geocoder.geocode(
         { location: { lat, lng }, language: 'ko' },
         (results, status) => {
+          clearTimeout(timeoutId);
+
           if (status === 'OK' && results?.[0]) {
             // address_components에서 동/구 수준까지만 조합
             const components = results[0].address_components;
@@ -187,6 +187,11 @@ function LocationPickerContent({
     }
 
     return new Promise((resolve) => {
+      // 5초 timeout 설정
+      const timeoutId = setTimeout(() => {
+        resolve(null);
+      }, 5000);
+
       const center = new google.maps.LatLng(lat, lng);
       const request: google.maps.places.PlaceSearchRequest = {
         location: center,
@@ -196,6 +201,8 @@ function LocationPickerContent({
 
       try {
         placesServiceRef.current!.nearbySearch(request, (results, status) => {
+          clearTimeout(timeoutId);
+
           // status가 OK가 아니거나 결과가 빈 배열일 경우 모두 resolve(null)
           if (
             status === google.maps.places.PlacesServiceStatus.OK &&
@@ -217,11 +224,26 @@ function LocationPickerContent({
             }
           }
 
-          // 어떤 조건에도 해당하지 않으면 null 반환 (여기서 무한 로딩 방지)
+          // 어떤 조건에도 해당하지 않으면 null 반환
           resolve(null);
         });
       } catch (error) {
-        console.error('NearbySearch Error:', error);
+        clearTimeout(timeoutId);
+
+        // 근처 장소 검색 실패는 정보성 경고 (주소는 여전히 표시됨)
+        Sentry.captureException(error, {
+          level: 'warning',
+          tags: {
+            context: 'location-picker',
+            operation: 'nearby-search',
+          },
+          extra: {
+            lat,
+            lng,
+          },
+        });
+        logger.error('nearby 검색 실패', error);
+
         resolve(null);
       }
     });
@@ -240,40 +262,91 @@ function LocationPickerContent({
   /**
    * 지도가 멈췄을 때(Idle) 중심 좌표의 주소를 갱신
    */
-  const handleMapIdle = async () => {
+  const handleMapIdle = () => {
     const service = getPlacesService();
     if (!service || !mapRef.current) return;
     if (isSelectedFromSearch.current) {
       isSelectedFromSearch.current = false;
       return;
     }
+    // 초기 위치 로딩이 완료되기 전에는 주소 갱신하지 않음
+    if (!isInitialLocationLoaded.current) {
+      return;
+    }
 
     const center = mapRef.current.getCenter();
     if (!center) return;
 
-    setIsAddressLoading(true);
-    try {
-      // 먼저 근처 POI 찾기
-      const placeName = await findNearbyPlace(center.lat(), center.lng());
-
-      if (placeName) {
-        setCenterPlaceName(placeName);
-        // 주소도 함께 가져오기
-        const addr = await reverseGeocode(center.lat(), center.lng());
-        setCenterAddress(addr);
-      } else {
-        // POI가 없으면 주소만 표시
-        const addr = await reverseGeocode(center.lat(), center.lng());
-        setCenterAddress(addr);
-        setCenterPlaceName('');
-      }
-    } catch (error) {
-      console.error('Error in handleMapIdle:', error);
-      setCenterAddress('주소를 불러올 수 없습니다.');
-      setCenterPlaceName('');
-    } finally {
-      setIsAddressLoading(false);
+    // 이전 타이머가 있으면 취소 (debounce)
+    if (mapIdleTimeoutRef.current) {
+      clearTimeout(mapIdleTimeoutRef.current);
     }
+
+    // 이전 요청이 진행 중이면 취소
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    setIsAddressLoading(true);
+
+    // 500ms 후에 실제 API 호출 (debounce)
+    mapIdleTimeoutRef.current = setTimeout(async () => {
+      abortControllerRef.current = new AbortController();
+
+      try {
+        // 먼저 근처 POI 찾기
+        const placeName = await findNearbyPlace(center.lat(), center.lng());
+
+        // abort 되었는지 확인
+        if (abortControllerRef.current?.signal.aborted) return;
+
+        if (placeName) {
+          setCenterPlaceName(placeName);
+          // 주소도 함께 가져오기
+          const addr = await reverseGeocode(center.lat(), center.lng());
+
+          if (abortControllerRef.current?.signal.aborted) return;
+
+          setCenterAddress(addr);
+        } else {
+          // POI가 없으면 주소만 표시
+          const addr = await reverseGeocode(center.lat(), center.lng());
+
+          if (abortControllerRef.current?.signal.aborted) return;
+
+          setCenterAddress(addr);
+          setCenterPlaceName('');
+        }
+      } catch (error) {
+        // abort된 경우는 에러 무시
+        if (
+          error instanceof Error &&
+          (error.name === 'AbortError' ||
+            abortControllerRef.current?.signal.aborted)
+        ) {
+          return;
+        }
+
+        // 지도 이동 후 주소 조회 실패는 UX에 영향
+        Sentry.captureException(error, {
+          level: 'warning',
+          tags: {
+            context: 'location-picker',
+            operation: 'map-idle-geocode',
+          },
+          extra: {
+            hasCenter: !!mapRef.current?.getCenter(),
+          },
+        });
+        logger.error('handleMapIdle', error);
+
+        setCenterAddress('주소를 불러올 수 없습니다.');
+        setCenterPlaceName('');
+      } finally {
+        setIsAddressLoading(false);
+        abortControllerRef.current = null;
+      }
+    }, 300);
   };
 
   const handleSelectPlace = (place: google.maps.places.PlaceResult) => {
@@ -282,6 +355,7 @@ function LocationPickerContent({
     const location = place.geometry.location;
 
     isSelectedFromSearch.current = true;
+    isInitialLocationLoaded.current = true;
 
     setCenterPlaceName(place.name || '');
     setCenterAddress(place.formatted_address || '');
@@ -310,37 +384,68 @@ function LocationPickerContent({
 
       if (mode === 'search') {
         const bounds = mapRef.current.getBounds();
-        if (bounds && geometryLib && window.google?.maps?.geometry?.spherical) {
+
+        if (bounds && geometryLib) {
           const ne = bounds.getNorthEast();
-          const radiusInMeters =
-            google.maps.geometry.spherical.computeDistanceBetween(center, ne);
-          data.radius = Math.round(radiusInMeters);
+
+          // 거리 계산
+          const radiusInMeters = geometryLib.spherical.computeDistanceBetween(
+            center,
+            ne,
+          );
+
+          const radiusInKm = radiusInMeters / 1000;
+
+          data.radius = Math.min(Number(radiusInKm.toFixed(2)), 100);
+        } else {
+          // geometryLib가 아직 로딩 전이거나 bounds를 가져오지 못한 경우
+          const warning = new Error('검색 반경 계산 실패 - 기본값 적용');
+          Sentry.captureException(warning, {
+            level: 'warning',
+            tags: {
+              context: 'location-picker',
+              operation: 'calculate-radius',
+            },
+            extra: {
+              hasGeometryLib: !!geometryLib,
+              hasBounds: !!bounds,
+            },
+          });
+          console.warn('반경 적용 실패');
+          data.radius = 5;
         }
       }
 
       onSelect(data);
     } catch (error) {
-      console.error('Location Confirm Error:', error);
+      // 위치 확정 실패는 사용자 작업이 완료되지 않으므로 에러
+      Sentry.captureException(error, {
+        level: 'error',
+        tags: {
+          context: 'location-picker',
+          operation: 'confirm-location',
+          mode,
+        },
+        extra: {
+          hasMap: !!mapRef.current,
+          hasAddress: !!centerAddress,
+        },
+      });
+      logger.error('Location Confirm', error);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleMyLocation = () => {
-    if (!mapRef.current || !geoLat || !geoLng) return;
-    mapRef.current.panTo({ lat: geoLat, lng: geoLng });
-    mapRef.current.setZoom(17);
-  };
-
   return (
     <div
       className={cn(
-        'w-full h-125 md:h-150 flex flex-col relative overflow-hidden bg-white',
+        'w-full h-full flex flex-col relative overflow-hidden bg-white',
         className,
       )}
     >
       {/* 검색 바 */}
-      <div className="absolute top-4 w-full px-4 z-50 max-w-md left-1/2 -translate-x-1/2">
+      <div className="absolute top-2 w-full px-4 z-50 max-w-md left-1/2 -translate-x-1/2">
         <MapSearchBar
           onSelect={handleSelectPlace}
           placeholder={mode === 'search' ? '검색할 지역 입력' : '장소 검색'}
@@ -355,8 +460,8 @@ function LocationPickerContent({
         <Map
           colorScheme={theme === 'dark' ? ColorScheme.DARK : ColorScheme.LIGHT}
           mapId={process.env.NEXT_PUBLIC_GOOGLE_MAPS_ID}
-          defaultCenter={initialCenter || { lat: 37.5665, lng: 126.978 }}
-          defaultZoom={17}
+          defaultCenter={initialCenter || DEFAULT_CENTER}
+          defaultZoom={6.7}
           disableDefaultUI
           gestureHandling="greedy"
           onDragstart={() => {
@@ -370,16 +475,6 @@ function LocationPickerContent({
             }}
           />
         </Map>
-
-        {/* 내 위치로 가기 버튼 */}
-        <button
-          onClick={handleMyLocation}
-          disabled={!geoLat || !geoLng}
-          className="absolute bottom-6 right-4 z-30 p-3 bg-white dark:bg-gray-800 rounded-full shadow-lg border border-gray-200 dark:border-gray-700 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          aria-label="내 위치로 이동"
-        >
-          <Locate size={20} className="text-gray-700 dark:text-gray-200" />
-        </button>
 
         {/* 중앙 핀 및 주소 표시 라벨 */}
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[calc(100%-43px)] pointer-events-none z-20 flex flex-col items-center">
@@ -400,15 +495,15 @@ function LocationPickerContent({
             alt="location pin"
             width={40}
             height={40}
-            // className="-translate-y-[85%]"
+            className="object-cover"
           />
 
-          <div className="mt-4 pointer-events-auto">
+          <div className="mt-2 pointer-events-auto">
             <Button
               size="sm"
               onClick={() => handleConfirm()}
               disabled={isProcessing || isAddressLoading}
-              className="shadow-lg font-bold px-6 h-10 rounded-full"
+              className="shadow-lg text-xs sm:text-sm font-bold px-4 sm:px-6 h-8 sm:h-10 rounded-full"
             >
               {isProcessing
                 ? '처리 중...'

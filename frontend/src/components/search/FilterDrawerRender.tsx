@@ -13,17 +13,6 @@ interface FilterDrawerProps {
   onUpdateUrl: (params: Record<string, string | null>) => void;
 }
 
-const ALL_TAGS = [
-  '일상',
-  '맛집',
-  '성수동',
-  '여행',
-  '운동',
-  '독서',
-  '가족',
-  '카페',
-];
-
 // 필터링 시 필요한 드로어 가져오는 함수
 export function FilterDrawerRenderer({
   activeDrawer,
@@ -38,7 +27,6 @@ export function FilterDrawerRenderer({
     case 'tag':
       return (
         <TagSearchDrawer
-          allTags={ALL_TAGS}
           selectedTags={tags}
           onToggleTag={(tag) => {
             const next = tags.includes(tag)

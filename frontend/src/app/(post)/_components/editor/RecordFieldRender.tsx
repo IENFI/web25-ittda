@@ -24,19 +24,20 @@ import {
   TextValue,
 } from '@/lib/types/record';
 import { useParams } from 'next/navigation';
+import { toast } from 'sonner';
+import { memo, useCallback } from 'react';
 
 interface FieldRendererProps {
   block: RecordBlock;
   streamingValue?: BlockValue;
   requestLock: (key: string) => void;
-  onUpdate: (blockId: string, val: BlockValue) => void;
+  onUpdate: (blockId: string, val: BlockValue, shouldStream?: boolean) => void;
   onCommit: (blockId: string, val: BlockValue) => void;
   onRemove: (blockId: string) => void;
   onOpenDrawer: (
     type: FieldType | 'layout' | 'saveLayout',
     id?: string,
   ) => void;
-  goToLocationPicker: () => void;
   isLastContentBlock: boolean;
   lock: {
     lockKey: string;
@@ -46,7 +47,7 @@ interface FieldRendererProps {
   draftId?: string;
 }
 
-export function RecordFieldRenderer({
+export const RecordFieldRenderer = memo(function RecordFieldRenderer({
   block,
   streamingValue,
   requestLock,
@@ -54,7 +55,6 @@ export function RecordFieldRenderer({
   onCommit,
   onRemove,
   onOpenDrawer,
-  goToLocationPicker,
   isLastContentBlock,
   lock,
 }: FieldRendererProps) {
@@ -63,23 +63,76 @@ export function RecordFieldRenderer({
 
   const displayValue = streamingValue ?? block.value;
 
-  const handleFocus = () => {
+  const handleFocus = useCallback(() => {
     if (!lock.isLockedByOther) {
       requestLock(lock.lockKey);
     }
-  };
+  }, [lock.isLockedByOther, lock.lockKey, requestLock]);
 
-  const handleCommit = (finalValue?: BlockValue) => {
-    if (lock.isMyLock) {
-      onCommit(block.id, finalValue ?? displayValue);
+  const handleCommit = useCallback(
+    (finalValue?: BlockValue) => {
+      if (!lock.isLockedByOther) {
+        onCommit(block.id, finalValue ?? displayValue);
+      }
+    },
+    [lock.isLockedByOther, onCommit, block.id, displayValue],
+  );
+
+  const handleLockAndAction = useCallback(() => {
+    if (lock.isLockedByOther) {
+      toast.error('현재 다른 사용자가 편집 중입니다.', { id: `locked-${lock.lockKey}` });
+      return;
     }
-  };
-  const handleLockAndAction = () => {
-    if (lock.isLockedByOther) return;
-    if (draftId && block.type !== 'location') requestLock(lock.lockKey);
-    if (block.type === 'location') goToLocationPicker();
-    else onOpenDrawer(block.type, block.id);
-  };
+    if (draftId) requestLock(lock.lockKey);
+    onOpenDrawer(block.type, block.id);
+  }, [lock.isLockedByOther, draftId, requestLock, lock.lockKey, onOpenDrawer, block.type, block.id]);
+
+  // 텍스트, 테이블을 위한 락 클릭
+  const handleLockedClick = useCallback(() => {
+    if (lock.isLockedByOther) {
+      toast.error('현재 다른 사용자가 편집 중입니다.', { id: `locked-${lock.lockKey}` });
+    }
+  }, [lock.isLockedByOther, lock.lockKey]);
+
+  const handleRemove = useCallback(() => {
+    onRemove(block.id);
+  }, [onRemove, block.id]);
+
+  const handleUpdateText = useCallback(
+    (v: string) => {
+      onUpdate(block.id, { text: v });
+    },
+    [onUpdate, block.id],
+  );
+
+  const handleBlurText = useCallback(
+    (finalText: string) => {
+      handleCommit({ text: finalText });
+    },
+    [handleCommit],
+  );
+
+  const handleTagRemove = useCallback(
+    (tag: string) => {
+      const newVal = {
+        tags: (displayValue as TagValue).tags.filter((t) => t !== tag),
+      };
+      onUpdate(block.id, newVal, false);
+      onCommit(block.id, newVal);
+    },
+    [displayValue, onUpdate, block.id, onCommit],
+  );
+
+  const handleTableUpdate = useCallback(
+    (d: TableValue | null) => {
+      if (d) {
+        onUpdate(block.id, d);
+      } else {
+        onRemove(block.id);
+      }
+    },
+    [onUpdate, block.id, onRemove],
+  );
 
   switch (block.type) {
     case 'date':
@@ -100,13 +153,14 @@ export function RecordFieldRenderer({
       return (
         <ContentField
           value={displayValue as TextValue}
-          onChange={(v) => onUpdate(block.id, { text: v })}
-          onRemove={() => onRemove(block.id)}
+          onChange={handleUpdateText}
+          onRemove={handleRemove}
           isLocked={lock?.isLockedByOther}
           isMyLock={lock.isMyLock}
           onFocus={handleFocus}
-          onBlur={(finalText) => handleCommit({ text: finalText })}
+          onBlur={handleBlurText}
           isLastContentBlock={isLastContentBlock}
+          onLockedClick={handleLockedClick}
         />
       );
     case 'photos':
@@ -114,7 +168,7 @@ export function RecordFieldRenderer({
         <PhotoField
           photos={displayValue as PhotoValue}
           onClick={handleLockAndAction}
-          onRemove={() => onRemove(block.id)}
+          onRemove={handleRemove}
           draftId={draftId}
         />
       );
@@ -123,33 +177,28 @@ export function RecordFieldRenderer({
         <EmotionField
           emotion={displayValue as EmotionValue}
           onClick={handleLockAndAction}
-          onRemove={() => onRemove(block.id)}
+          onRemove={handleRemove}
         />
       );
     case 'tags':
       return (
         <TagField
           tags={displayValue as TagValue}
-          onRemove={(tag) => {
-            const newVal = {
-              tags: (displayValue as TagValue).tags.filter((t) => t !== tag),
-            };
-            onUpdate(block.id, newVal);
-            onCommit(block.id, newVal);
-          }}
+          onRemove={handleTagRemove}
           onAdd={handleLockAndAction}
-          onRemoveField={() => onRemove(block.id)}
+          onRemoveField={handleRemove}
         />
       );
     case 'table':
       return (
         <TableField
           data={displayValue as TableValue}
-          onUpdate={(d) => (d ? onUpdate(block.id, d) : onRemove(block.id))}
+          onUpdate={handleTableUpdate}
           isLocked={lock.isLockedByOther}
           isMyLock={lock.isMyLock}
           onFocus={handleFocus}
           onBlur={handleCommit}
+          onLockedClick={handleLockedClick}
         />
       );
     case 'rating':
@@ -157,7 +206,7 @@ export function RecordFieldRenderer({
         <RatingField
           value={displayValue as RatingValue}
           onClick={handleLockAndAction}
-          onRemove={() => onRemove(block.id)}
+          onRemove={handleRemove}
         />
       );
     case 'location':
@@ -165,7 +214,7 @@ export function RecordFieldRenderer({
         <LocationField
           location={displayValue as LocationValue}
           onClick={handleLockAndAction}
-          onRemove={() => onRemove(block.id)}
+          onRemove={handleRemove}
         />
       );
     case 'media':
@@ -173,10 +222,10 @@ export function RecordFieldRenderer({
         <MediaField
           data={displayValue as MediaInfoValue}
           onClick={handleLockAndAction}
-          onRemove={() => onRemove(block.id)}
+          onRemove={handleRemove}
         />
       );
     default:
       return null;
   }
-}
+});

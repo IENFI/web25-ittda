@@ -4,59 +4,78 @@ import ProfileEditProvider from '@/app/(main)/profile/edit/_components/ProfileEd
 import ProfileEditHeaderActions from '@/components/ProfileEditHeaderActions';
 import ProfileInfo from '@/components/ProfileInfo';
 import { useApiPatch } from '@/hooks/useApi';
+import { useMediaUpload } from '@/hooks/useMediaUpload';
+import { groupDetailOptions } from '@/lib/api/group';
 import { UpdateGroupMeParams } from '@/lib/types/groupResponse';
 
-import { BaseUser } from '@/lib/types/profile';
-import { useAuthStore } from '@/store/useAuthStore';
-import { useQueryClient } from '@tanstack/react-query';
+import { useSuspenseQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { toast } from 'sonner';
+import { revalidateGroupProfile } from '../../actions';
+import * as Sentry from '@sentry/nextjs';
+import { logger } from '@/lib/utils/logger';
+import { useRouter } from 'next/navigation';
 
 interface GroupProfileEditClientProps {
   groupId: string;
-  groupProfile: Omit<BaseUser, 'email'>;
 }
 
 export default function GroupProfileEditClient({
   groupId,
-  groupProfile,
 }: GroupProfileEditClientProps) {
   const { mutateAsync: updateProfile } = useApiPatch<UpdateGroupMeParams>(
     `/api/groups/${groupId}/members/me`,
   );
-  const { userId } = useAuthStore();
+  const { data: groupData } = useSuspenseQuery(groupDetailOptions(groupId));
 
+  const router = useRouter();
   const queryClient = useQueryClient();
   const [isPending, setIsPending] = useState(false);
+
+  const { uploadMultipleMedia } = useMediaUpload();
 
   const handleSave = async (data: { nickname: string; image: File | null }) => {
     setIsPending(true);
     try {
-      const finalMediaId = groupProfile.profileImageId;
+      let finalMediaId = groupData.me?.profileImage?.assetId ?? undefined;
 
       if (data.image) {
-        // const uploadRes = await uploadMedia(data.image);
-        // finalMediaId = uploadRes.id;
+        finalMediaId = (await uploadMultipleMedia([data.image])).successIds[0];
       }
 
       await updateProfile({
-        groupId: groupId,
-        userId: userId || 'userId',
         nicknameInGroup: data.nickname,
         profileMediaId: finalMediaId || undefined,
       });
 
-      queryClient.invalidateQueries({ queryKey: ['group', groupId, 'me'] });
+      // 클라이언트 쿼리 캐시 무효화
+      await queryClient.invalidateQueries({ queryKey: ['group', groupId] });
+
+      // 서버 캐시 무효화
+      await revalidateGroupProfile(groupId);
+
       toast.success('프로필 정보가 수정되었습니다.');
+      router.back();
     } catch (error) {
-      console.error('그룹 내 내정보 수정 실패', error);
+      Sentry.captureException(error, {
+        level: 'error',
+        tags: {
+          context: 'group-user-profile',
+          operation: 'update-profile-in-group',
+        },
+        extra: {
+          nickname: data.nickname,
+          groupId: groupId,
+        },
+      });
+      logger.error('그룹 내 내정보 수정 실패', error);
     } finally {
       setIsPending(false);
     }
   };
 
-  const currentNickname = groupProfile?.nickname || '';
-  const currentImage = groupProfile?.profileImageId || '';
+  const currentNickname = groupData.me.nicknameInGroup || '';
+  const currentImage = groupData.me.profileImage?.assetId || '';
 
   return (
     <ProfileEditProvider

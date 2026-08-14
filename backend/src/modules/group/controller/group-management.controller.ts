@@ -8,7 +8,6 @@ import {
   Param,
   Patch,
   Delete,
-  Query,
 } from '@nestjs/common';
 import { GroupManagementService } from '../service/group-management.service';
 import { JwtAuthGuard } from '../../auth/jwt/jwt.guard';
@@ -23,10 +22,8 @@ import { GetGroupSettingsResponseDto } from '../dto/get-group-settings.dto';
 import { GetGroupMembersResponseDto } from '../dto/get-group-members.dto';
 import { GetGroupMemberMeResponseDto } from '../dto/get-group-member-me.dto';
 import { UpdateGroupMemberMeDto } from '../dto/update-group-member-me.dto';
-import {
-  GetGroupCoverCandidatesQueryDto,
-  GetGroupCoverCandidatesResponseDto,
-} from '../dto/get-group-cover-candidates.dto';
+import { GetGroupPermissionResponseDto } from '../dto/get-group-permission.dto';
+import { ToggleGroupNotificationDto } from '../dto/toggle-group-notification.dto';
 import { User } from '@/common/decorators/user.decorator';
 import type { MyJwtPayload } from '../../auth/auth.type';
 import { GroupRoleEnum } from '@/enums/group-role.enum';
@@ -79,8 +76,8 @@ export class GroupManagementController {
       properties: {
         role: {
           type: 'string',
-          enum: [GroupRoleEnum.ADMIN, GroupRoleEnum.EDITOR],
-          example: GroupRoleEnum.EDITOR,
+          enum: Object.values(GroupRoleEnum),
+          example: GroupRoleEnum.VIEWER,
         },
       },
     },
@@ -126,6 +123,27 @@ export class GroupManagementController {
   }
 
   @UseGuards(GroupRoleGuard)
+  @GroupRoles(GroupRoleEnum.EDITOR)
+  @Delete(':groupId/cover')
+  @ApiOperation({
+    summary: '그룹 커버 이미지 초기화',
+    description: '그룹의 커버 이미지를 기본값으로 되돌립니다.',
+  })
+  @ApiParam({ name: 'groupId', description: '그룹 ID' })
+  @ApiWrappedOkResponse({ type: Object })
+  async resetGroupCover(
+    @User() user: MyJwtPayload,
+    @Param('groupId') groupId: string,
+  ) {
+    return {
+      data: await this.groupManagementService.resetGroupCover(
+        user.sub,
+        groupId,
+      ),
+    };
+  }
+
+  @UseGuards(GroupRoleGuard)
   @GroupRoles(GroupRoleEnum.VIEWER)
   @Get(':groupId/settings')
   @ApiOperation({
@@ -158,6 +176,53 @@ export class GroupManagementController {
     return this.groupManagementService.getGroupMemberMe(user.sub, groupId);
   }
 
+  @Get(':groupId/members/me/role')
+  @ApiOperation({
+    summary: '그룹 내 내 권한(role) 조회',
+    description: '특정 그룹에서의 내 권한(role)만 조회합니다.',
+  })
+  @ApiParam({ name: 'groupId', description: '그룹 ID' })
+  @ApiWrappedOkResponse({ type: GetGroupPermissionResponseDto })
+  async getGroupPermission(
+    @User() user: MyJwtPayload,
+    @Param('groupId') groupId: string,
+  ): Promise<GetGroupPermissionResponseDto> {
+    return this.groupManagementService.getGroupPermission(user.sub, groupId);
+  }
+
+  @Patch(':groupId/members/me/read')
+  @ApiOperation({
+    summary: '그룹 읽음 처리',
+    description: '그룹 페이지 진입 시 lastReadAt을 현재 시간으로 갱신합니다.',
+  })
+  @ApiParam({ name: 'groupId', description: '그룹 ID' })
+  async markGroupAsRead(
+    @User() user: MyJwtPayload,
+    @Param('groupId') groupId: string,
+  ): Promise<void> {
+    await this.groupManagementService.markGroupAsRead(user.sub, groupId);
+  }
+
+  @Patch(':groupId/members/me/notification')
+  @ApiOperation({
+    summary: '그룹 알림 설정 토글',
+    description:
+      '권한에 관계없이 모든 멤버가 해당 그룹의 알림을 켜고 끌 수 있습니다.',
+  })
+  @ApiParam({ name: 'groupId', description: '그룹 ID' })
+  @ApiBody({ type: ToggleGroupNotificationDto })
+  async toggleGroupNotification(
+    @User() user: MyJwtPayload,
+    @Param('groupId') groupId: string,
+    @Body() dto: ToggleGroupNotificationDto,
+  ): Promise<void> {
+    await this.groupManagementService.toggleGroupNotification(
+      user.sub,
+      groupId,
+      dto.muted,
+    );
+  }
+
   @UseGuards(GroupRoleGuard)
   @GroupRoles(GroupRoleEnum.VIEWER)
   @Patch(':groupId/members/me')
@@ -177,28 +242,6 @@ export class GroupManagementController {
       user.sub,
       groupId,
       dto,
-    );
-  }
-
-  @UseGuards(GroupRoleGuard)
-  @GroupRoles(GroupRoleEnum.VIEWER)
-  @Get(':groupId/cover-candidates')
-  @ApiOperation({
-    summary: '그룹 커버 후보 조회',
-    description:
-      '그룹 내 게시글 중 커버로 사용할 수 있는 이미지들을 조회합니다.',
-  })
-  @ApiParam({ name: 'groupId', description: '그룹 ID' })
-  @ApiWrappedOkResponse({ type: GetGroupCoverCandidatesResponseDto })
-  async getGroupCoverCandidates(
-    @User() user: MyJwtPayload,
-    @Param('groupId') groupId: string,
-    @Query() query: GetGroupCoverCandidatesQueryDto,
-  ): Promise<GetGroupCoverCandidatesResponseDto> {
-    return this.groupManagementService.getGroupCoverCandidates(
-      user.sub,
-      groupId,
-      query,
     );
   }
 

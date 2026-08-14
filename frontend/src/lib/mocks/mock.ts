@@ -19,6 +19,16 @@ export const createMockRecordPreviews = (date: string): RecordPreview[] => [
   {
     postId: '225f4bd7-3bbc-4a71-8747-fe6a43dc3d6c',
     scope: 'ME',
+    contributors: [
+      {
+        groupNickname: '도비',
+        groupProfileImageId: null,
+        nickname: '도비',
+        profileImageId: '/profile_base.png',
+        role: 'AUTHOR',
+        userId: '9f01b831-79d3-46a7-9c99-3db2b09ce7ae',
+      },
+    ],
     groupId: null,
     title: '성수동 팝업스토어 방문',
     eventAt: `${date}T13:30:00Z`,
@@ -88,6 +98,16 @@ export const createMockRecordPreviews = (date: string): RecordPreview[] => [
   {
     postId: 'b3c7e8f1-2a45-4d89-9c12-abc123def456',
     scope: 'ME',
+    contributors: [
+      {
+        groupNickname: '도비',
+        groupProfileImageId: null,
+        nickname: '도비',
+        profileImageId: '/profile_base.png',
+        role: 'AUTHOR',
+        userId: '9f01b831-79d3-46a7-9c99-3db2b09ce7ae',
+      },
+    ],
     groupId: null,
     title: '한남동 브런치 맛집',
     eventAt: `${date}T11:00:00Z`,
@@ -145,7 +165,18 @@ export const createMockRecordPreviews = (date: string): RecordPreview[] => [
   {
     postId: 'c9d8e7f6-5b34-4c21-8a09-fed987cba654',
     scope: 'GROUP',
+    contributors: [
+      {
+        groupNickname: '도비',
+        groupProfileImageId: null,
+        nickname: '도비',
+        profileImageId: '/profile_base.png',
+        role: 'AUTHOR',
+        userId: '9f01b831-79d3-46a7-9c99-3db2b09ce7ae',
+      },
+    ],
     groupId: 'group-123',
+    groupName: '고3 전우들',
     title: '홍대 버스킹 구경',
     eventAt: `${date}T19:00:00Z`,
     createdAt: `${date}T21:00:00Z`,
@@ -234,6 +265,9 @@ export const createMockGroupList = (): GroupListResponse => ({
         eventAt: new Date().toISOString(),
         placeName: '성수동',
       },
+      permission: 'ADMIN',
+      notificationMuted: false,
+      hasUnread: false,
     },
     {
       groupId: 'group-2',
@@ -254,6 +288,9 @@ export const createMockGroupList = (): GroupListResponse => ({
         eventAt: new Date().toISOString(),
         placeName: '협재 해수욕장',
       },
+      permission: 'ADMIN',
+      notificationMuted: false,
+      hasUnread: false,
     },
     {
       groupId: 'group-3',
@@ -274,6 +311,9 @@ export const createMockGroupList = (): GroupListResponse => ({
         eventAt: '2026-01-19T08:00:00Z',
         placeName: '강남역 모임장소',
       },
+      permission: 'ADMIN',
+      notificationMuted: false,
+      hasUnread: false,
     },
   ],
 });
@@ -601,7 +641,6 @@ export const createMockGroupSettings = (id: string): GroupEditResponse => ({
     groupId: id,
     name: '우리들의 기록',
     createdAt: '2025-12-01T03:12:00Z',
-    ownerUserId: 'uuid',
     cover: {
       assetId: '/profile-ex.jpeg',
       sourcePostId: 'uuid',

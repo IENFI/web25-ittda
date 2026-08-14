@@ -1,3 +1,5 @@
+import { Contributor } from './recordResponse';
+
 export type TemplateType =
   | 'diary'
   | 'travel'
@@ -50,7 +52,7 @@ export interface DayRecord {
   dayName: string;
   title: string;
   count: number;
-  coverUrl: string;
+  coverUrl: string | null;
 }
 
 export interface Tag {
@@ -78,15 +80,15 @@ export interface RecordSearchItem {
   address: string;
   date: string;
   content: string;
-  imageUrl: string;
-  tags: string[];
+  previewMediaIds: string[];
+  snippet?: string;
 }
 
 export type RecordScope = 'PERSONAL' | 'GROUP';
 export type CreateRecordBlock = Omit<Block, 'id'> & { id?: string };
 
 export interface CreateRecordRequest {
-  scope: RecordScope;
+  scope?: RecordScope;
   groupId?: string | null;
   title: string;
   thumbnailMediaId?: string;
@@ -226,7 +228,9 @@ export interface RecordDetailResponse {
   createdAt: string;
   updatedAt: string;
   blocks: Block[];
-  contributors: RecordContributor[];
+  contributors: Contributor[];
+  hasActiveEditDraft?: boolean;
+  shareToken?: string | null;
 }
 
 // 지도 리스트 아이템
@@ -235,8 +239,9 @@ export interface MapPostItem {
   lat: number;
   lng: number;
   title: string;
-  imageUrl: string;
+  previewMediaIds: string[];
   createdAt: string;
   tags: string[];
-  placeName: string;
+  placeName: string | null;
+  snippet?: string;
 }

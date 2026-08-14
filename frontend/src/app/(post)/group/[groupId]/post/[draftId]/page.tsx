@@ -1,8 +1,13 @@
 import PostEditor from '@/app/(post)/_components/editor/RecordEditor';
 import { groupDraftOptions } from '@/lib/api/groupRecord';
+import { getCachedGroupMyProfile } from '@/lib/api/group';
 import { RecordBlock } from '@/lib/types/record';
 import { ServerToFieldTypeMap } from '@/lib/utils/mapBlocksToPayload';
 import { QueryClient } from '@tanstack/react-query';
+import { redirect } from 'next/navigation';
+import * as Sentry from '@sentry/nextjs';
+import { logger } from '@/lib/utils/logger';
+import { ERROR_CODES, hasErrorCode } from '@/lib/utils/errorHandler';
 
 interface AddPostPageProps {
   params: Promise<{
@@ -19,6 +24,12 @@ export default async function PostDraftPage({
   const { groupId, draftId } = await params;
   const { mode: queryMode, postId } = await searchParams;
   const mode = (queryMode as 'add' | 'edit') || 'add';
+
+  try {
+    await getCachedGroupMyProfile(groupId);
+  } catch {
+    redirect('/shared');
+  }
 
   const queryClient = new QueryClient();
   let initialPost = undefined;
@@ -43,7 +54,36 @@ export default async function PostDraftPage({
         version: data.version || 0,
       };
     } catch (error) {
-      console.error('공동 드래프트 로드 실패:', error);
+      // Draft를 찾지 못한 경우 (이미 발행되었거나 삭제됨)
+      const isNotFound = hasErrorCode(error, ERROR_CODES.NOT_FOUND);
+
+      if (isNotFound) {
+        // Draft를 찾지 못한 경우
+        // 발행 직후: DRAFT_PUBLISHED 이벤트로 클라이언트가 리다이렉트 처리
+        // 실제로 없는 draft: 클라이언트에서 에러 처리 필요
+        logger.error('Draft not found - client will handle', {
+          draftId,
+          groupId,
+        });
+        // initialPost: undefined로 렌더링
+        // PostEditor에서 클라이언트 측 처리 필요
+      } else {
+        // 실제 에러인 경우에만 Sentry 전송
+        Sentry.captureException(error, {
+          level: 'error',
+          tags: {
+            context: 'post-editor',
+            operation: 'load-draft-blocks',
+          },
+          extra: {
+            mode: mode,
+            postId: postId,
+            draftId: draftId,
+            groupId: groupId,
+          },
+        });
+        logger.error('공동 드래프트 로드 실패', error);
+      }
     }
   }
 

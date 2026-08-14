@@ -1,4 +1,4 @@
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm run build:be
 
 
-FROM node:20-slim AS runner
+FROM node:22-slim AS runner
 
 WORKDIR /app
 ENV NODE_ENV=production
@@ -48,5 +48,5 @@ WORKDIR /app/backend
 
 EXPOSE 4000
 
-CMD ["node", "dist/main.js"]
+CMD ["node", "dist/src/main.js"]
 # nest start는 기본적으로 소스 코드(src/main.ts)를 실행

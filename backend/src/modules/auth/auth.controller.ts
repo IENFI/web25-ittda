@@ -5,14 +5,13 @@ import {
   Req,
   UseGuards,
   Res,
-  UnauthorizedException,
   ForbiddenException,
   NotFoundException,
   Body,
   Headers,
   HttpCode,
 } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+// import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from './jwt/jwt.guard';
@@ -27,14 +26,20 @@ import { ApiWrappedOkResponse } from '@/common/swagger/api-wrapped-response.deco
 
 import type { Request, Response } from 'express';
 import type { OAuthUserType } from './auth.type';
+import { KakaoAuthGuard } from './guards/kakao-auth.guard';
+import { GoogleAuthGuard } from './guards/google-auth.guard';
 import { DevTokenRequestDto } from './dto/dev-token.dto';
+import {
+  AUTH_ERROR_CODES,
+  AuthUnauthorizedException,
+} from '@/common/exceptions/auth-unauthorized.exception';
 
 interface AuthenticatedRequest extends Request {
   user: { sub: string; email?: string };
-  cookies: {
-    refreshToken?: string;
-    [key: string]: string | undefined;
-  };
+}
+
+interface OAuthCallbackRequest extends Request {
+  user: OAuthUserType;
 }
 
 @ApiTags('auth')
@@ -53,7 +58,7 @@ export class AuthController {
   }
 
   @Get('google')
-  @UseGuards(AuthGuard('google'))
+  @UseGuards(GoogleAuthGuard)
   @ApiOperation({
     summary: 'Google 로그인',
     description: 'Google OAuth2 로그인 페이지로 리다이렉트합니다.',
@@ -61,19 +66,15 @@ export class AuthController {
   async googleLogin() {}
 
   @Get('google/callback')
-  @UseGuards(AuthGuard('google'))
+  @UseGuards(GoogleAuthGuard)
   @ApiOperation({
     summary: 'Google 로그인 콜백',
     description: 'Google 인증 완료 후 호출되며, FE로 리다이렉트합니다.',
   })
-  async googleCallback(
-    @Req() req: Request & { user: OAuthUserType },
-    @Res() res: Response,
-    @Headers('x-guest-session-id') guestSessionId?: string,
-  ) {
+  async googleCallback(@Req() req: OAuthCallbackRequest, @Res() res: Response) {
     // 1. DB에 유저 생성/조회 + 토큰 발급 (실제 oauthLogin 호출)
     const { accessToken, refreshToken, expiresAt } =
-      await this.authService.oauthLogin(req.user, guestSessionId);
+      await this.authService.oauthLogin(req.user);
 
     // 2. 토큰 정보를 담은 임시 code 생성
     const code = this.authService.createTemporaryCode({
@@ -83,13 +84,21 @@ export class AuthController {
       expiresAt,
     });
 
-    // 3. FE로 리다이렉트
-    const redirectUrl = `${this.FRONTEND_URL}/oauth/callback?code=${code}`;
+    // 3. FE로 리다이렉트 (모바일 앱은 커스텀 스킴으로)
+    const isMobile = req.cookies?.oauth_mobile === '1';
+    const isAndroid = req.cookies?.oauth_android === '1';
+    res.clearCookie('oauth_mobile', { path: '/' });
+    res.clearCookie('oauth_android', { path: '/' });
+    const redirectUrl = isMobile
+      ? isAndroid
+        ? `${this.FRONTEND_URL}/oauth/callback?code=${code}&platform=android`
+        : `ittda://oauth/callback?code=${code}`
+      : `${this.FRONTEND_URL}/oauth/callback?code=${code}`;
     return res.redirect(302, redirectUrl);
   }
 
   @Get('kakao')
-  @UseGuards(AuthGuard('kakao'))
+  @UseGuards(KakaoAuthGuard)
   @ApiOperation({
     summary: 'Kakao 로그인',
     description: 'Kakao OAuth2 로그인 페이지로 리다이렉트합니다.',
@@ -97,19 +106,15 @@ export class AuthController {
   async kakaoLogin() {}
 
   @Get('kakao/callback')
-  @UseGuards(AuthGuard('kakao'))
+  @UseGuards(KakaoAuthGuard)
   @ApiOperation({
     summary: 'Kakao 로그인 콜백',
     description: 'Kakao 인증 완료 후 호출되며, FE로 리다이렉트합니다.',
   })
-  async kakaoCallback(
-    @Req() req: Request & { user: OAuthUserType },
-    @Res() res: Response,
-    @Headers('x-guest-session-id') guestSessionId?: string,
-  ) {
+  async kakaoCallback(@Req() req: OAuthCallbackRequest, @Res() res: Response) {
     // Google과 동일한 로직
     const { accessToken, refreshToken, expiresAt } =
-      await this.authService.oauthLogin(req.user, guestSessionId);
+      await this.authService.oauthLogin(req.user);
 
     const code = this.authService.createTemporaryCode({
       userId: req.user.provider + '_' + req.user.providerId,
@@ -118,7 +123,15 @@ export class AuthController {
       expiresAt,
     });
 
-    const redirectUrl = `${this.FRONTEND_URL}/oauth/callback?code=${code}`;
+    const isMobile = req.cookies?.oauth_mobile === '1';
+    const isAndroid = req.cookies?.oauth_android === '1';
+    res.clearCookie('oauth_mobile', { path: '/' });
+    res.clearCookie('oauth_android', { path: '/' });
+    const redirectUrl = isMobile
+      ? isAndroid
+        ? `${this.FRONTEND_URL}/oauth/callback?code=${code}&platform=android`
+        : `ittda://oauth/callback?code=${code}`
+      : `${this.FRONTEND_URL}/oauth/callback?code=${code}`;
     return res.redirect(302, redirectUrl);
   }
 
@@ -126,7 +139,7 @@ export class AuthController {
   @ApiOperation({
     summary: '인증 코드 교환',
     description:
-      'OAuth 콜백에서 받은 코드를 Access Token과 Refresh Token으로 교환합니다.',
+      'OAuth 콜백에서 받은 코드를 Access Token과 Refresh Token으로 교환합니다. 게스트 세션이 있다면 유저로 병합도 수행합니다.',
   })
   @ApiBody({
     schema: {
@@ -139,13 +152,20 @@ export class AuthController {
   @ApiNoContentResponse({
     description: '인증 성공 (토큰은 쿠키 및 헤더에 설정됨)',
   })
-  exchangeCode(
+  //@ApiWrappedOkResponse({ type: Object })
+  async exchangeCode(
     @Body('code') code: string,
     @Res({ passthrough: true }) res: Response,
+    @Headers('x-guest-session-id') guestSessionId?: string,
   ) {
     // code 검증 후 저장된 토큰 반환
-    const { accessToken, refreshToken } =
+    const { userId, accessToken, refreshToken } =
       this.authService.exchangeCodeForTokens(code);
+
+    if (guestSessionId) {
+      // 게스트 세션 병합
+      await this.authService.mergeGuestSession(userId, guestSessionId);
+    }
 
     // HttpOnly 쿠키에 refresh token 저장
     res.cookie('refreshToken', refreshToken, {
@@ -177,23 +197,28 @@ export class AuthController {
     @Req() req: AuthenticatedRequest,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const oldToken = req.cookies?.refreshToken;
+    const oldToken = req.cookies?.refreshToken as string | undefined;
 
     if (!oldToken) {
-      throw new UnauthorizedException('No refresh token');
+      throw new AuthUnauthorizedException(
+        AUTH_ERROR_CODES.REFRESH_TOKEN_NOT_FOUND,
+        'Refresh token is required',
+      );
     }
 
     try {
       const { accessToken, refreshToken } =
         await this.authService.refreshAccessToken(oldToken);
 
-      res.cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        path: '/',
-        maxAge: 1000 * 60 * 60 * 24 * 14,
-      });
+      if (refreshToken) {
+        res.cookie('refreshToken', refreshToken, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+          path: '/',
+          maxAge: 1000 * 60 * 60 * 24 * 14,
+        });
+      }
 
       res.set('Authorization', `Bearer ${accessToken}`);
       res.set('Access-Control-Expose-Headers', 'Authorization');
@@ -228,6 +253,7 @@ export class AuthController {
     return;
   }
 
+  // TODO: 운영환경에서는 주석하는 것 추천
   @Post('dev/token')
   @ApiOperation({
     summary: '개발용 토큰 발급',

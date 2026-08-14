@@ -1,124 +1,148 @@
-# 팀 잇다-
+<div align="center">
 
-## 🧩 서비스 소개
+# 잇다-
 
-잇다는 유저의 파편화된 일상 기록을 통합하고 맥락을 부여하기 위해 설계된 위치 기반 통합 기록 및 공유 플랫폼입니다.<br />
-해당 서비스는 일상, 여행, 취미, 문화생활 등 다양한 영역에서 경험한 모든 순간을 ‘장소’라는 맥락 위에 기록하는 감성 아카이브입니다.<br />
-각 활동에 최적화된 다양한 테마 템플릿을 제공함으로써 기록의 시작을 쉽고 재밌게 만들며, 단순한 글과 사진을 넘어 기록 당시의 감정과 맥락을 생상하게 보존하도록 돕습니다.<br />
+**흩어진 순간을 하나의 흐름으로**<br/>
+사진 메타데이터 기반 자동 기록과 실시간 공동 편집을 지원하는 그룹 기록 앱
 
-여러분의 소중한 추억을 '잇다-'에서 채워보세요!
+<br/>
 
-<br />
+[![서비스 바로가기](https://img.shields.io/badge/잇다%20바로가기-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://ittda.vercel.app/)
 
-## 👉 배포 링크
+<br/>
 
-https://web25-ittda-frontend.vercel.app/
+<img alt="image" src="https://github.com/user-attachments/assets/81fe0602-bc60-47ce-b9bd-173b036b1e68" />
 
-<br />
+</div>
+
+<br/>
+
+---
+
+## 📱 화면 소개
+
+<div align="center">
+
+<!-- 온보딩 스크린샷 5장 -->
+
+| <img width="200" src="https://github.com/user-attachments/assets/7fa4642b-0f2c-4fbc-b30f-998028bbd48c" /> | <img width="200" src="https://github.com/user-attachments/assets/b88a61af-e5b9-4a8e-84f8-bfc7dc942c3c" /> | <img width="200" src="https://github.com/user-attachments/assets/b4a52838-c1d5-4a41-90b5-55a4d43ecdec" /> | <img width="200" src="https://github.com/user-attachments/assets/5400ceb1-217a-495f-a8fe-19ba96c9840d" /> | <img width="200" src="https://github.com/user-attachments/assets/5c020e49-e7bc-4de5-b5c2-58e45236f99f" /> |
+| :-------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------: |
+|                                      시간으로 분류되는<br/>타임라인                                       |                                 나만의 스타일로<br/>완성하는 오늘의 기록                                  |                                     친구와 함께 하는<br/>실시간 기록                                      |                                          우리들의<br/>추억 지도                                           |                                          나의 소중한<br/>기록들                                           |
+
+</div>
+
+<br/>
+
+---
+
+## 💡 왜 잇다인가요?
+
+함께한 순간은 많지만, 그 기억을 제대로 남기기란 쉽지 않습니다.
+
+- 사진은 갤러리에, 위치는 지도 앱에, 기록은 메모장에 — **흩어진 정보**
+- 맥락 없이 쌓이는 사진들 — **잊혀지는 기억**
+- 함께한 추억인데 각자의 SNS에만 — **파편화된 기록**
+
+잇다는 이 세 가지 문제를 한 번에 해결합니다.
+
+<br/>
+
+---
+
+## ✨ 주요 기능
+
+### 📷 사진 한 장으로 기록 시작
+
+사진을 올리면 날짜 · 시간 · 위치가 메타데이터 기반으로 자동 입력됩니다.<br/>
+직접 입력할 필요 없이, 찍은 순간이 그대로 기록이 됩니다.
+
+### 🎨 내 스타일대로 꾸미는 기록
+
+다양한 템플릿과 필드를 자유롭게 조합해 나만의 기록물을 만들 수 있어요.<br/>
+드래그 앤 드롭으로 레이아웃을 바꾸고, 상황에 맞는 형식을 선택하세요.
+
+### 👥 함께 쓰는 그룹 기록
+
+로그인 없이도 친구를 초대해 실시간으로 같이 기록할 수 있어요.<br/>
+각자의 시선으로 같은 순간을 채워가는 공동 기록 경험을 제공합니다.
+
+### 🗺️ 지도와 타임라인으로 다시 보는 추억
+
+기록된 위치가 지도 위에 자동으로 표시되고,<br/>
+하루의 흐름을 타임라인으로 한눈에 돌아볼 수 있어요.
+
+### 📊 나의 기록 패턴 분석
+
+얼마나 자주, 어디서, 어떤 감정으로 기록했는지 통계로 확인해보세요.
+
+<br/>
+
+---
+
+## 🛠 기술 스택
+
+### Frontend
+
+<p>
+  <img src="https://img.shields.io/badge/typescript-3178C6?style=for-the-badge&logo=typescript&logoColor=white">
+  <img src="https://img.shields.io/badge/next.js-000000?style=for-the-badge&logo=next.js&logoColor=white">
+  <img src="https://img.shields.io/badge/Tanstack%20Query-FF4154?style=for-the-badge&logo=react-query&logoColor=white">
+  <img src="https://img.shields.io/badge/tailwind%20css-06B6D4?style=for-the-badge&logo=tailwind-css&logoColor=white">
+  <img src="https://img.shields.io/badge/vercel-000000?style=for-the-badge&logo=vercel&logoColor=white">
+  <img src="https://img.shields.io/badge/capacitor-119EFF?style=for-the-badge&logo=capacitor&logoColor=white">
+</p>
+
+### Backend
+
+<p>
+  <img src="https://img.shields.io/badge/nestjs-E0234E?style=for-the-badge&logo=nestjs&logoColor=white">
+  <img src="https://img.shields.io/badge/postgresql-4169E1?style=for-the-badge&logo=postgresql&logoColor=white">
+  <img src="https://img.shields.io/badge/typeorm-FE0808?style=for-the-badge&logo=typeorm&logoColor=white">
+  <img src="https://img.shields.io/badge/socket.io-010101?style=for-the-badge&logo=socket.io&logoColor=white">
+  <img src="https://img.shields.io/badge/swagger-85EA2D?style=for-the-badge&logo=swagger&logoColor=black">
+</p>
+
+### Infrastructure
+
+<p>
+  <img src="https://img.shields.io/badge/Oracle%20Cloud-F80000?style=for-the-badge&logo=oracle&logoColor=white">
+  <img src="https://img.shields.io/badge/docker-2496ED?style=for-the-badge&logo=docker&logoColor=white">
+</p>
+
+<br/>
+
+---
 
 ## 👥 팀원 소개
 
 | <img src="https://avatars.githubusercontent.com/u/56586470?v=4" width="150" /> | <img src="https://avatars.githubusercontent.com/u/138753711?v=4" width="150"/> | <img src="https://avatars.githubusercontent.com/u/167273831?v=4" width="150" /> | <img src="https://avatars.githubusercontent.com/u/129252277?v=4" width="150" /> |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| [도비(황수연)](https://github.com/H-sooyeon)                                   | [앤프(하민영)](https://github.com/IENFI)                                       | [두리(이기필)](https://github.com/openLeeWorld)                                 | [주디(이시영)](https://github.com/Yeong-si)                                     |
-| ISFP                                                                           | ISTP                                                                           | INTP                                                                            | ISFP                                                                            |
+| :----------------------------------------------------------------------------: | :----------------------------------------------------------------------------: | :-----------------------------------------------------------------------------: | :-----------------------------------------------------------------------------: |
+|                  [도비(황수연)](https://github.com/H-sooyeon)                  |                    [앤프(하민영)](https://github.com/IENFI)                    |                 [두리(이기필)](https://github.com/openLeeWorld)                 |                   [주디(이시영)](https://github.com/Yeong-si)                   |
+|                                      ISFP                                      |                                      ISTP                                      |                                      INTP                                       |                                      ISFP                                       |
 
-<br />
-
-## 🤝 협업 전략 (브랜치 구조와 분업하기, 의존적인 작업하기)
-
-### 최종 브랜치 전략
-
-- 프로덕션/배포 브랜치(main)
-  - 이 브랜치에 머지/푸시될 때만 실제 클라우드 배포 실행
-- 기본(기준) 브랜치(develop)
-  - 모든 기능 브랜치의 머지 대상
-  - 브랜치 보호 규칙 설정 및 CI 실행 브랜치
-  - 기능 브랜치
-
-<br />
-
-**네이밍 규칙**: `[Type]/작업-이슈번호<br />
-예: feat/login-#23, fix/header-layout-#10
-
-<br />
-
-## 🧸 그라운드룰
-
-### 💬 커뮤니케이션
-
-**데일리 체크인**: 아침 진행 상황/컨디션 공유
-
-- 중요한 논의는 반드시 문서화(GitHub Issue, Notion 등)
-- 불명확한 요구사항 → 질문 먼저, 추측 금지
-- 의견 주장 시 — AI 근거 사용 금지, 본인 판단·검증된 근거 우선
-- 슬랙 응답: 코어타임에는 즉시 응답 or 최소 리액션
-- 말투·억양 등 개인 특성으로 오해하지 않기 (경상도 억양 등)
-
-### 🕒 일정 / 작업 규칙
-
-- 데드라인은 조정 가능하되, 지연될 경우 반드시 사전 공유
-- 하루 작업 시간은 자유롭게, 대신 최소 1회 진행 상황 공유 필수
-- 회의는 1시간 / 휴식 10분 원칙
-- 목요일 저녁~금요일 오전: 통합 테스트 기간
-- 배포 흐름:
-  - dev 브랜치 → push 시 CI 실행
-  - main 브랜치 → push 시 CD(배포) 실행
-
-### 🧪 코드 & PR 규칙
-
-- PR/커밋 전에 모든 유닛 테스트 작성 + 통과 필수
-- PR에는 반드시 결과 스크린샷 또는 테스트 결과 포함
-- PR 리뷰 시:
-  - 코드 실행 여부 반드시 확인
-  - 팀원 모두 실행 가능한 환경 보장
-  - 테스트 통과한 코드만 import·사용 가능
-  - lint-staged + husky 활용 (pre-commit, pre-push)
-
-### 😊 팀 분위기
-
-- 서로의 의견을 존중하고, 말투나 억양로 오해하지 않기
-- 완벽보다 빠른 합의 → 지속적인 개선
-- 지치지 않는 흐름 만들기
-- 각자의 성향·약점 이해하기
-- 커뮤니케이션 시 부드럽고 명확하게
-
-<br />
-
-## 📜 커밋 템플릿, 이슈 템플릿 : 개발 작업을 위한 공통 자료
-
-### 📝 Commit Message
-
-```txt
-type: 제목 (#이슈번호)
-
-- 본문
+<br/>
 
 ---
 
-feat 새로운 기능 추가
-fix 버그 수정
-refactor 코드 구조 개선
-chore 설정/빌드 수정
-test 테스트 코드
-docs 문서
-style 코드 포매팅/스타일 변경
-```
+## 📎 링크 모음
 
-### 이슈 템플릿
+| 분류          | 링크                                                                                                                                                            |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 기획서        | [Notion](https://www.notion.so/12-11-2c618227616c804186b4eccdb6f103ce)                                                                                          |
+| 화면설계안    | [Figma](https://www.figma.com/design/6VcNOelb7c6mt5rGP0Hv1P/web25-%EA%B7%B8%EB%A3%B9-%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B8?node-id=0-1&p=f&t=n0kXJA9JwNWpdLFS-0) |
+| 회의록        | [GitHub Wiki](https://github.com/boostcampwm2025/web25-boostcamp/wiki/12%EC%9B%94-%ED%9A%8C%EC%9D%98%EB%A1%9D)                                                  |
+| 이슈          | [GitHub Issues](https://github.com/boostcampwm2025/web25-boostcamp/issues)                                                                                      |
+| 프로젝트 보드 | [GitHub Projects](https://github.com/orgs/boostcampwm2025/projects/227)                                                                                         |
+| 위키          | [GitHub Wiki](https://github.com/boostcampwm2025/web25-boostcamp/wiki)                                                                                          |
 
-.github/ISSUE_TEMPLATE 참조
+<br/>
 
-<br>
+---
 
-## 📒 기획/디자인 링크
+<details>
+<summary>🧪 개발/테스트 인프라</summary>
 
-- [기획서](https://www.notion.so/12-11-2c618227616c804186b4eccdb6f103ce)
-- [화면설계안](https://www.figma.com/design/6VcNOelb7c6mt5rGP0Hv1P/web25-%EA%B7%B8%EB%A3%B9-%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B8?node-id=0-1&p=f&t=n0kXJA9JwNWpdLFS-0)
-
-<br />
-
-## 🧪 개발/테스트 인프라
+<br/>
 
 - dev 인프라: `pnpm run infra:up` / `pnpm run infra:down`
 - test DB 인프라: `pnpm run infra:test:up` / `pnpm run infra:test:down`
@@ -127,9 +151,4 @@ style 코드 포매팅/스타일 변경
   - test: `pnpm -C backend run db:mig:run:test`
   - 기타: `pnpm -C backend run db:mig:show` / `db:mig:show:test`
 
-## 📒 회의록/이슈/위키 연결 : 협업과 개발 과정의 문서 자료
-
-- [회의록](https://github.com/boostcampwm2025/web25-boostcamp/wiki/12%EC%9B%94-%ED%9A%8C%EC%9D%98%EB%A1%9D)
-- [이슈](https://github.com/boostcampwm2025/web25-boostcamp/issues)
-- [깃허브 프로젝트](https://github.com/orgs/boostcampwm2025/projects/227)
-- [프로젝트 위키 링크](https://github.com/boostcampwm2025/web25-boostcamp/wiki)
+</details>

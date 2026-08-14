@@ -7,8 +7,10 @@ import {
   IsNumber,
   Min,
   Max,
+  IsEnum,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PostMood } from '@/enums/post-mood.enum';
 
 export class SearchPostsDto {
   @ApiPropertyOptional({ description: '검색 키워드 (제목 및 내용)' })
@@ -31,6 +33,16 @@ export class SearchPostsDto {
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
+
+  @ApiPropertyOptional({
+    description: '감정 목록',
+    type: [String],
+    example: ['행복', '슬픔'],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsEnum(PostMood, { each: true })
+  emotions?: PostMood[];
 
   @ApiPropertyOptional({ description: '위도' })
   @IsOptional()
@@ -57,8 +69,11 @@ export class SearchResultItemDto {
   @ApiProperty({ description: '게시글 ID' })
   id: string;
 
-  @ApiPropertyOptional({ description: '썸네일 URL' })
-  thumbnailUrl?: string;
+  @ApiProperty({
+    type: [String],
+    description: '미리보기 이미지 ID 목록 (최대 5개)',
+  })
+  previewMediaIds: string[];
 
   @ApiProperty({ description: '제목' })
   title: string;
@@ -79,6 +94,9 @@ export class SearchResultItemDto {
 export class PaginatedSearchResponseDto {
   @ApiProperty({ type: [SearchResultItemDto] })
   items: SearchResultItemDto[];
+
+  @ApiProperty({ description: '검색 조건에 매칭되는 전체 게시글 수' })
+  count: number;
 
   @ApiPropertyOptional({ description: '다음 페이지용 커서' })
   nextCursor?: string;

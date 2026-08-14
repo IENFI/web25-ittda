@@ -2,7 +2,13 @@
 
 import { Group } from '@/lib/types/group';
 import { GroupMember } from '@/lib/types/groupResponse';
-import { createContext, useContext, useState, ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  ReactNode,
+} from 'react';
 
 interface GroupEditData {
   groupName: string;
@@ -12,13 +18,7 @@ interface GroupEditData {
 
 type GroupEditContextType = GroupEditData & {
   setGroupName: (name: string) => void;
-  setGroupThumbnail: ({
-    assetId,
-    postId,
-  }: {
-    assetId: string;
-    postId: string;
-  }) => void;
+  setGroupThumbnail: (thumbnail: { assetId: string; postId: string } | null) => void;
   setMembers: (
     members: GroupMember[] | ((prev: GroupMember[]) => GroupMember[]),
   ) => void;
@@ -38,7 +38,7 @@ export function useGroupEdit() {
 interface GroupEditProviderProps {
   children: ReactNode;
   initialName: Group['groupName'];
-  initialThumbnail: Group['groupThumnail'];
+  initialThumbnail: { assetId: string; postId: string };
   initialMembers: GroupMember[];
 }
 
@@ -46,13 +46,27 @@ export function GroupEditProvider({
   children,
   initialName,
   initialMembers,
+  initialThumbnail,
 }: GroupEditProviderProps) {
   const [groupName, setGroupName] = useState(initialName);
   const [groupThumbnail, setGroupThumbnail] = useState<{
     assetId: string;
     postId: string;
-  } | null>(null);
+  } | null>(initialThumbnail);
   const [members, setMembers] = useState<GroupMember[]>(initialMembers);
+
+  // props 변경 시 state 업데이트
+  useEffect(() => {
+    setGroupName(initialName);
+  }, [initialName]);
+
+  useEffect(() => {
+    setGroupThumbnail(initialThumbnail);
+  }, [initialThumbnail, initialThumbnail.assetId, initialThumbnail.postId]);
+
+  useEffect(() => {
+    setMembers(initialMembers);
+  }, [initialMembers]);
 
   const getEditData = (): GroupEditData => ({
     groupName,

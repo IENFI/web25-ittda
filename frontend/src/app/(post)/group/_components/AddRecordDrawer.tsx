@@ -1,16 +1,17 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { User, Users, X } from 'lucide-react';
+import { ChevronRight, User, Users, X } from 'lucide-react';
 import {
   Drawer,
   DrawerContent,
-  DrawerHeader,
   DrawerTitle,
   DrawerClose,
 } from '@/components/ui/drawer';
 import { cn } from '@/lib/utils';
 import { useNewPostDraft } from '@/hooks/useGrouprRecord';
+import * as Sentry from '@sentry/nextjs';
+import { logger } from '@/lib/utils/logger';
 
 interface AddRecordDrawerProps {
   isOpen: boolean;
@@ -24,64 +25,90 @@ export function AddRecordDrawer({
   groupId,
 }: AddRecordDrawerProps) {
   const router = useRouter();
-  const { refetch: getNewPostDraft } = useNewPostDraft(groupId || '');
+  const { refetch: getNewPostDraft, isFetching } = useNewPostDraft(
+    groupId || '',
+  );
 
   const handleGroupRecord = async () => {
-    if (!groupId) return;
+    if (!groupId || isFetching) return;
 
-    try {
-      const { data: refetchedData } = await getNewPostDraft();
+    const { data: refetchedData, isError, error } = await getNewPostDraft();
 
-      if (refetchedData?.redirectUrl) {
-        router.push(refetchedData.redirectUrl);
-        onOpenChange(false);
-      } else {
-        console.warn('리다이렉트 URL이 없습니다.');
-      }
-
-      onOpenChange(false);
-    } catch (error) {
-      console.error('Failed to initiate group record:', error);
+    if (isError) {
+      Sentry.captureException(error, {
+        level: 'error',
+        tags: { context: 'group', operation: 'create-group-record' },
+        extra: { groupId },
+      });
+      logger.error('그룹 드래프트 생성 실패', error);
+      return;
     }
+
+    if (refetchedData?.redirectUrl) {
+      onOpenChange(false);
+      router.replace(refetchedData.redirectUrl);
+    } else {
+      // 리다이렉트 URL 누락은 백엔드 응답 문제일 가능성
+      const error = new Error(
+        '공동 기록 생성 응답에 리다이렉트 URL이 없습니다',
+      );
+      Sentry.captureException(error, {
+        level: 'warning',
+        tags: {
+          context: 'group',
+          operation: 'create-group-record',
+        },
+        extra: {
+          groupId,
+          responseData: refetchedData,
+        },
+      });
+      // console.warn('리다이렉트 URL이 없습니다.');
+    }
+
+    onOpenChange(false);
   };
 
   const handleIndividualRecord = () => {
-    router.push(`/add?groupId=${groupId}`);
     onOpenChange(false);
+    router.replace(`/add?groupId=${groupId}`);
   };
 
   return (
     <Drawer open={isOpen} onOpenChange={onOpenChange}>
-      <DrawerContent className="px-6 pb-10">
-        <div className="w-full ">
-          <DrawerHeader className="relative pt-8 pb-6 px-0 text-left md:text-left">
-            <div className="text-[10px] font-bold text-itta-point tracking-wider uppercase mb-1">
-              Select Mode
-            </div>
-            <DrawerTitle className="text-xl font-bold dark:text-white">
+      <DrawerContent className="px-6 pb-8 sm:pb-12">
+        <div className="w-full">
+          <div className="pt-5 pb-4 flex items-center justify-between">
+            <DrawerTitle className="text-lg font-bold dark:text-white">
               기록 방식을 선택하세요
             </DrawerTitle>
-            <DrawerClose className="absolute right-0 top-8 p-2 rounded-full hover:bg-gray-100 dark:hover:bg-white/5 transition-colors">
+            <DrawerClose className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-white/5 transition-colors">
               <X className="w-5 h-5 text-gray-400" />
             </DrawerClose>
-          </DrawerHeader>
+          </div>
 
-          <div className="grid grid-cols-2 gap-4 mt-4">
+          <div className="flex flex-col gap-3 mt-1 mb-2">
             {/* 혼자 기록하기 */}
             <button
               onClick={handleIndividualRecord}
               className={cn(
-                'flex flex-col items-center justify-center gap-4 p-8 rounded-[32px] transition-all',
-                'bg-gray-50 dark:bg-white/5 hover:scale-[1.02] active:scale-[0.98]',
-                'border border-transparent hover:border-itta-point/30',
+                'flex items-center gap-4 p-4 rounded-2xl text-left transition-all active:scale-[0.98]',
+                'bg-gray-50 dark:bg-white/5 hover:bg-gray-100 dark:hover:bg-white/10',
+                'border border-gray-100 dark:border-white/10',
               )}
             >
-              <div className="w-14 h-14 bg-white dark:bg-gray-800 rounded-full flex items-center justify-center shadow-sm">
-                <User className="w-7 h-7 text-itta-point" />
+              <div className="w-11 h-11 bg-itta-point/10 dark:bg-itta-point/20 rounded-xl flex items-center justify-center shrink-0">
+                <User className="w-5 h-5 text-itta-point" />
               </div>
-              <span className="font-bold text-sm dark:text-gray-200">
-                혼자 기록
-              </span>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-sm dark:text-white text-[#222]">
+                  혼자 기록
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  나만의 기록을 남겨요
+                </p>
+              </div>
+              <ChevronRight className="w-4 h-4 text-gray-400 shrink-0" />
             </button>
 
             {/* 공동 기록하기 */}
@@ -89,28 +116,25 @@ export function AddRecordDrawer({
               disabled={!groupId}
               onClick={handleGroupRecord}
               className={cn(
-                'flex flex-col items-center justify-center gap-4 p-8 rounded-[32px] transition-all',
-                'bg-gray-50 dark:bg-white/5 hover:scale-[1.02] active:scale-[0.98]',
-                'border border-transparent hover:border-itta-point/30',
-                !groupId && 'opacity-50 cursor-not-allowed grayscale',
+                'flex items-center gap-4 p-4 rounded-2xl text-left transition-all active:scale-[0.98]',
+                'bg-gray-50 dark:bg-white/5 hover:bg-gray-100 dark:hover:bg-white/10',
+                'border border-gray-100 dark:border-white/10',
+                !groupId && 'opacity-50 cursor-not-allowed',
               )}
             >
-              <div className="w-14 h-14 bg-white dark:bg-gray-800 rounded-full flex items-center justify-center shadow-sm">
-                <Users className="w-7 h-7 text-itta-point" />
+              <div className="w-11 h-11 bg-itta-point/10 dark:bg-itta-point/20 rounded-xl flex items-center justify-center shrink-0">
+                <Users className="w-5 h-5 text-itta-point" />
               </div>
-              <span className="font-bold text-sm dark:text-gray-200">
-                공동 기록
-              </span>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-sm dark:text-white text-[#222]">
+                  공동 기록
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  그룹원과 함께 기록해요
+                </p>
+              </div>
+              <ChevronRight className="w-4 h-4 text-gray-400 shrink-0" />
             </button>
-          </div>
-
-          {/* 닫기 버튼 (참고 사진 스타일) */}
-          <div className="mt-8">
-            <DrawerClose asChild>
-              <button className="w-full py-4 bg-[#2C2C2C] dark:bg-white text-white dark:text-black rounded-2xl font-bold text-base active:scale-[0.97] transition-all">
-                닫기
-              </button>
-            </DrawerClose>
           </div>
         </div>
       </DrawerContent>

@@ -1,13 +1,14 @@
 'use client';
 
 import { Camera, X } from 'lucide-react';
+import { useIMEInput } from '@/hooks/useIMEInput';
 import Image from 'next/image';
-import { useRef } from 'react';
+import { useRef, useMemo, useEffect } from 'react';
 import { useProfileEdit } from '../app/(main)/profile/edit/_components/ProfileEditContext';
 import AssetImage from './AssetImage';
 
 interface ProfileInfoProps {
-  profileImage: string;
+  profileImage: string | null;
   showEmail?: boolean;
 }
 
@@ -17,6 +18,21 @@ export default function ProfileInfo({
 }: ProfileInfoProps) {
   const { image, setImage, nickname, setNickname, email } = useProfileEdit();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const nicknameImeProps = useIMEInput(setNickname);
+
+  // Blob URL을 메모이제이션하여 불필요한 재생성 방지
+  const imagePreviewUrl = useMemo(() => {
+    return image ? URL.createObjectURL(image) : null;
+  }, [image]);
+
+  // Blob URL cleanup
+  useEffect(() => {
+    return () => {
+      if (imagePreviewUrl) {
+        URL.revokeObjectURL(imagePreviewUrl);
+      }
+    };
+  }, [imagePreviewUrl]);
 
   const handleImageClick = () => {
     fileInputRef.current?.click();
@@ -31,14 +47,21 @@ export default function ProfileInfo({
 
   // 닉네임 유효성 검사
   const getNicknameError = () => {
-    if (nickname.length === 0) return null;
     if (nickname.length < 2) return '닉네임은 최소 2자 이상이어야 합니다.';
     if (nickname.length > 10) return '닉네임은 최대 10자까지 입력 가능합니다.';
-    const nicknameRegex = /^[가-힣a-zA-Z0-9\s]+$/;
 
-    if (!nicknameRegex.test(nickname)) {
-      return '특수문자는 사용할 수 없습니다. (한글, 영문, 숫자, 공백만 가능)';
+    // 자음/모음만 있는지 체크
+    const incompleteHangulRegex = /[ㄱ-ㅎㅏ-ㅣ]/;
+    if (incompleteHangulRegex.test(nickname)) {
+      return '완성된 한글을 입력해주세요';
     }
+
+    // 허용된 문자만 사용했는지 체크
+    const groupNameRegex = /^[가-힣a-zA-Z0-9\s]+$/;
+    if (!groupNameRegex.test(nickname)) {
+      return '한글, 영문, 숫자, 공백만 사용할 수 있어요';
+    }
+
     return null;
   };
 
@@ -52,17 +75,25 @@ export default function ProfileInfo({
             onClick={handleImageClick}
             className="relative group cursor-pointer"
           >
-            <div className="w-32 h-32 rounded-full border-4 overflow-hidden shadow-md transition-colors dark:border-[#1E1E1E] dark:bg-[#1E1E1E] border-gray-50 bg-gray-50">
-              {image && URL.createObjectURL(image) ? (
+            <div className="flex justify-center items-center w-24 h-24 sm:w-28 sm:h-28 rounded-full border-4 overflow-hidden shadow-md transition-colors dark:border-[#1E1E1E] dark:bg-[#1E1E1E] border-gray-50 bg-gray-50">
+              {imagePreviewUrl ? (
                 <Image
-                  width={100}
-                  height={100}
-                  src={image && URL.createObjectURL(image)}
-                  alt="Profile"
+                  width={128}
+                  height={128}
+                  src={imagePreviewUrl}
+                  alt={`${nickname} 프로필`}
                   className="w-full h-full object-cover"
+                  style={{ imageOrientation: 'from-image' }}
                 />
               ) : (
-                <AssetImage assetId={profileImage} alt={`${nickname} 프로필`} />
+                <AssetImage
+                  className="w-full h-full object-cover"
+                  width={128}
+                  height={128}
+                  assetId={profileImage || '/profile_base.png'}
+                  alt={`${nickname} 프로필`}
+                  wrapperClassName="w-full h-full"
+                />
               )}
             </div>
             <div className="absolute bottom-0 right-0 w-10 h-10 text-white bg-itta-black rounded-full flex items-center justify-center border-2 border-white shadow-lg active:scale-90 transition-all">
@@ -87,8 +118,8 @@ export default function ProfileInfo({
               <input
                 type="text"
                 value={nickname}
-                onChange={(e) => setNickname(e.target.value)}
-                className={`w-full border-b-2 bg-transparent px-1 py-4 text-sm font-semibold transition-all outline-none dark:text-white dark:placeholder-gray-700 text-itta-black placeholder-gray-300 ${
+                {...nicknameImeProps}
+                className={`w-full border-b-2 bg-transparent px-1 py-4 text-base font-semibold transition-all outline-none dark:text-white dark:placeholder-gray-700 text-itta-black placeholder-gray-300 ${
                   nicknameError
                     ? 'border-red-500 dark:border-red-500 focus:border-red-500 dark:focus:border-red-500'
                     : 'dark:border-white/5 dark:focus:border-[#10B981] border-gray-100 focus:border-[#10B981]'
@@ -98,6 +129,7 @@ export default function ProfileInfo({
               {nickname && (
                 <button
                   onClick={() => setNickname('')}
+                  aria-label="닉네임 지우기"
                   className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-300 hover:text-gray-400"
                 >
                   <X className="w-4 h-4" />
@@ -116,7 +148,7 @@ export default function ProfileInfo({
           </div>
 
           {showEmail && email && (
-            <div className="space-y-2 flex flex-col justify-center items-start gap-1">
+            <div className="space-y-1 flex flex-col justify-center items-start gap-1">
               <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-1">
                 이메일 계정
               </label>
@@ -124,7 +156,7 @@ export default function ProfileInfo({
                 type="text"
                 value={email}
                 disabled
-                className="w-full text-start border rounded-lg px-3 py-4 text-sm font-semibold cursor-not-allowed transition-colors dark:bg-white/5 dark:border-white/5 dark:text-gray-500 bg-gray-50 border-gray-100 text-gray-400"
+                className="w-full text-start border rounded-lg px-3 py-3 text-xs sm:text-sm font-semibold cursor-not-allowed transition-colors dark:bg-white/5 dark:border-white/5 dark:text-gray-400 bg-gray-50 border-gray-100 text-gray-400"
               />
             </div>
           )}

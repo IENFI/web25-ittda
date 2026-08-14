@@ -1,16 +1,19 @@
 import { cache } from 'react';
 import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query';
-import { get } from './api';
+import { get, patch } from './api';
 import {
   DailyRecordList,
   GroupCoverListResponse,
   GroupDailyRecordedDatesResponse,
   GroupListResponse,
   MonthlyRecordList,
+  PaginatedMonthlyRecordListResponse,
 } from '../types/recordResponse';
 import {
+  GroupActivityResponse,
   GroupEditResponse,
   GroupMemberProfileResponse,
+  GroupMemberRoleResponse,
   GroupMembersResponse,
 } from '../types/groupResponse';
 import { createApiError } from '../utils/errorHandler';
@@ -52,7 +55,7 @@ export const getCachedGroupMonthlyRecordList = cache(
     if (!response.success) {
       throw createApiError(response);
     }
-    return response.data;
+    return response.data ?? [];
   },
 );
 
@@ -76,11 +79,10 @@ export const getCachedGroupDailyRecordList = cache(
  */
 export const getCachedGroupList = cache(async () => {
   const response = await get<GroupListResponse>('/api/groups');
-
   if (!response.success) {
     throw createApiError(response);
   }
-  return response.data.items;
+  return response.data;
 });
 
 /**
@@ -126,10 +128,11 @@ export const groupListOptions = () =>
       if (!response.success) {
         throw createApiError(response);
       }
-      return response.data.items;
+      return response.data?.items ?? [];
     },
     staleTime: PERSONAL_STALE_TIME, // 초대를 수락했을 때 invalidate 필요
     retry: false,
+    refetchOnMount: false, // hydrated 데이터가 있으면 마운트 시 refetch하지 않음
   });
 
 export const groupMyProfileOptions = (groupId: string) =>
@@ -145,6 +148,26 @@ export const groupMyProfileOptions = (groupId: string) =>
     },
     staleTime: PERSONAL_STALE_TIME,
   });
+
+export const groupMyRoleOptions = (groupId: string) =>
+  queryOptions({
+    queryKey: ['group', groupId, 'me', 'role'],
+    queryFn: async () => {
+      const res = await get<GroupMemberRoleResponse>(
+        `/api/groups/${groupId}/members/me/role`,
+      );
+      if (!res.success) throw createApiError(res);
+
+      return res.data;
+    },
+    staleTime: PERSONAL_STALE_TIME,
+  });
+
+export const toggleGroupNotification = (groupId: string, muted: boolean) =>
+  patch(`/api/groups/${groupId}/members/me/notification`, { muted });
+
+export const markGroupAsRead = (groupId: string) =>
+  patch(`/api/groups/${groupId}/members/me/read`, {});
 
 export const groupDetailOptions = (groupId: string) =>
   queryOptions({
@@ -252,6 +275,27 @@ export const groupMonthlyRecordListOptions = (groupId: string, year?: string) =>
     retry: false,
   });
 
+export const groupMonthlyRecordInfiniteOptions = (groupId: string) =>
+  infiniteQueryOptions({
+    queryKey: ['group', groupId, 'records', 'month', 'all'],
+    queryFn: async ({ pageParam }) => {
+      const query = pageParam
+        ? `?allYears=true&sort=latest&cursor=${pageParam}`
+        : '?allYears=true&sort=latest';
+      const response = await get<PaginatedMonthlyRecordListResponse>(
+        `/api/groups/${groupId}/archives/months${query}`,
+      );
+
+      if (!response.success) {
+        throw createApiError(response);
+      }
+      return response.data;
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage?.nextCursor ?? undefined,
+    retry: false,
+  });
+
 export const groupDailyRecordListOptions = (groupId: string, month: string) =>
   queryOptions({
     queryKey: ['group', groupId, 'records', 'daily', month],
@@ -293,6 +337,29 @@ export const groupMonthlyRecordCoverOptions = (
       return lastPage.pageInfo.hasNext
         ? lastPage.pageInfo.nextCursor
         : undefined;
+    },
+    retry: false,
+  });
+
+export const groupActivitiesOptions = (groupId: string) =>
+  infiniteQueryOptions({
+    queryKey: ['group', groupId, 'activity'],
+    queryFn: async ({ pageParam }) => {
+      const url = pageParam
+        ? `/api/groups/${groupId}/activities?cursor=${pageParam}`
+        : `/api/groups/${groupId}/activities`;
+
+      const response = await get<GroupActivityResponse>(url);
+
+      if (!response.success) {
+        throw createApiError(response);
+      }
+      return response.data;
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => {
+      if (!lastPage) return undefined;
+      return lastPage.nextCursor ?? undefined;
     },
     retry: false,
   });

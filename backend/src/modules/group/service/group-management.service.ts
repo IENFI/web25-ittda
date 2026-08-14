@@ -5,12 +5,14 @@ import {
   BadRequestException,
   ForbiddenException,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Brackets, Repository } from 'typeorm';
 import { Group } from '../entity/group.entity';
 import { GroupMember } from '../entity/group_member.entity';
 import { GroupRoleEnum } from '@/enums/group-role.enum';
+import { GroupActivityType } from '@/enums/group-activity-type.enum';
 import { User } from '../../user/entity/user.entity';
 import { Post } from '@/modules/post/entity/post.entity';
 import {
@@ -18,20 +20,33 @@ import {
   PostMediaKind,
 } from '@/modules/post/entity/post-media.entity';
 import { MediaAsset } from '@/modules/media/entity/media-asset.entity';
+import { MediaService } from '@/modules/media/media.service';
 import { UpdateGroupCoverResponseDto } from '../dto/update-group-cover.dto';
 import { GetGroupSettingsResponseDto } from '../dto/get-group-settings.dto';
 import { GetGroupMemberMeResponseDto } from '../dto/get-group-member-me.dto';
 import { UpdateGroupMemberMeDto } from '../dto/update-group-member-me.dto';
+import { GetGroupPermissionResponseDto } from '../dto/get-group-permission.dto';
 import {
   GetGroupCoverCandidatesQueryDto,
   GetGroupCoverCandidatesResponseDto,
   CoverCandidateItemDto,
 } from '../dto/get-group-cover-candidates.dto';
+import { GroupActivityService } from './group-activity.service';
+import { GroupService } from './group.service';
+import {
+  DraftInvalidationResult,
+  PostDraftCleanupService,
+} from '@/modules/post/post-draft-cleanup.service';
 
-const GROUP_NICKNAME_REGEX = /^[a-zA-Z0-9가-힣 ]+$/;
+import {
+  resolveGroupNickname,
+  validateGroupNickname,
+} from '../utils/group-nickname';
 
 @Injectable()
 export class GroupManagementService {
+  private readonly logger = new Logger(GroupManagementService.name);
+
   constructor(
     @InjectRepository(Group)
     private readonly groupRepo: Repository<Group>,
@@ -50,6 +65,10 @@ export class GroupManagementService {
 
     @InjectRepository(MediaAsset)
     private readonly mediaAssetRepo: Repository<MediaAsset>,
+    private readonly groupActivityService: GroupActivityService,
+    private readonly groupService: GroupService,
+    private readonly mediaService: MediaService,
+    private readonly postDraftCleanupService: PostDraftCleanupService,
   ) {}
 
   /** 멤버 초대 (ADMIN만 가능하도록 Controller/Guard에서 제한) */
@@ -66,7 +85,7 @@ export class GroupManagementService {
         group,
         user,
         role,
-        nicknameInGroup: this.validateGroupNickname(user.nickname),
+        nicknameInGroup: resolveGroupNickname(user.nickname),
       });
 
       return this.groupMemberRepo.save(member);
@@ -76,41 +95,80 @@ export class GroupManagementService {
     }
   }
 
-  /** 멤버 추방 (관리자/방장만 가능) */
+  /** 멤버 추방 (관리자만 가능) */
   async removeMember(
     requesterId: string,
     groupId: string,
     targetUserId: string,
   ) {
-    const requesterMember = await this.groupMemberRepo.findOne({
-      where: { groupId, userId: requesterId },
+    let draftInvalidation: DraftInvalidationResult | null = null;
+    let profileMediaDeletionCandidateIds: string[] = [];
+
+    await this.groupMemberRepo.manager.transaction(async (manager) => {
+      const groupMemberRepo = manager.getRepository(GroupMember);
+
+      const groupMember = await groupMemberRepo
+        .createQueryBuilder('gm')
+        .where('gm.groupId = :groupId', { groupId })
+        .andWhere('gm.userId = :targetUserId', { targetUserId })
+        .andWhere('gm.deletedAt IS NULL')
+        .setLock('pessimistic_write')
+        .getOne();
+
+      if (!groupMember)
+        throw new NotFoundException('그룹 멤버를 찾을 수 없습니다.');
+
+      if (groupMember.role === GroupRoleEnum.ADMIN) {
+        throw new ForbiddenException('관리자는 추방할 수 없습니다.');
+      }
+
+      // 본인 추방은 leaveGroup 사용
+      if (requesterId === targetUserId) {
+        throw new ForbiddenException(
+          '자기 자신을 추방할 수 없습니다. 나가기를 이용하세요.',
+        );
+      }
+
+      draftInvalidation =
+        await this.postDraftCleanupService.invalidateOwnedDraftsInGroupWithManager(
+          manager,
+          targetUserId,
+          groupId,
+          'GROUP_MEMBER_REMOVED',
+        );
+      profileMediaDeletionCandidateIds =
+        groupMember.profileMediaId != null
+          ? await this.mediaService.markMediaDeletionCandidatesWithManager(
+              manager,
+              [groupMember.profileMediaId],
+            )
+          : [];
+
+      await groupMemberRepo.softDelete(groupMember.id);
     });
 
-    if (!requesterMember || requesterMember.role !== GroupRoleEnum.ADMIN) {
-      throw new ForbiddenException('추방 권한이 없습니다.');
-    }
+    const finalizedDraftInvalidation =
+      draftInvalidation as DraftInvalidationResult | null;
 
-    // 대상이 방장인지 확인 (방장은 추방 불가)
-    const group = await this.groupRepo.findOne({
-      where: { id: groupId },
-      relations: ['owner'],
-    });
-    if (!group) throw new NotFoundException('그룹을 찾을 수 없습니다.');
-
-    if (group.owner.id === targetUserId) {
-      throw new ForbiddenException('방장은 추방할 수 없습니다.');
-    }
-
-    // 본인 추방은 leaveGroup 사용
-    if (requesterId === targetUserId) {
-      throw new ForbiddenException(
-        '자기 자신을 추방할 수 없습니다. 나가기를 이용하세요.',
+    if (finalizedDraftInvalidation) {
+      await this.postDraftCleanupService.notifyDraftInvalidations([
+        finalizedDraftInvalidation,
+      ]);
+      await this.mediaService.deleteMediaAssets(
+        Array.from(
+          new Set([
+            ...finalizedDraftInvalidation.mediaDeletionCandidateIds,
+            ...profileMediaDeletionCandidateIds,
+          ]),
+        ),
       );
     }
 
-    await this.groupMemberRepo.delete({
-      group: { id: groupId },
-      user: { id: targetUserId },
+    await this.groupActivityService.recordActivity({
+      groupId,
+      type: GroupActivityType.MEMBER_REMOVE,
+      actorIds: [requesterId],
+      meta: { targetUserId },
     });
   }
 
@@ -118,26 +176,47 @@ export class GroupManagementService {
   async updateMemberRole(
     requesterId: string,
     groupId: string,
-    userId: string,
+    targetId: string,
     role: GroupRoleEnum,
   ) {
-    // 1. 본인 여부 확인
-    if (requesterId === userId) {
+    if (requesterId === targetId) {
       throw new ForbiddenException('자신의 권한은 직접 수정할 수 없습니다.');
     }
 
     try {
-      const member = await this.groupMemberRepo.findOneOrFail({
-        where: {
-          group: { id: groupId },
-          user: { id: userId },
+      const updateResult = await this.updateMemberRoleWithLock(
+        groupId,
+        targetId,
+        role,
+      );
+
+      if (updateResult.draftInvalidation) {
+        await this.postDraftCleanupService.notifyDraftInvalidations([
+          updateResult.draftInvalidation,
+        ]);
+        await this.mediaService.deleteMediaAssets(
+          updateResult.draftInvalidation.mediaDeletionCandidateIds,
+        );
+      }
+
+      await this.groupActivityService.recordActivity({
+        groupId,
+        type: GroupActivityType.MEMBER_ROLE_CHANGE,
+        actorIds: [requesterId],
+        meta: {
+          targetUserId: targetId,
+          beforeRole: updateResult.beforeRole,
+          afterRole: role,
         },
       });
-
-      member.role = role;
-      return await this.groupMemberRepo.save(member);
+      return updateResult.saved;
     } catch (error) {
-      if (error instanceof BadRequestException) throw error;
+      if (
+        error instanceof BadRequestException ||
+        error instanceof ForbiddenException
+      ) {
+        throw error;
+      }
 
       throw new InternalServerErrorException(
         '권한 변경 중 오류가 발생했습니다.',
@@ -145,30 +224,154 @@ export class GroupManagementService {
     }
   }
 
+  private async updateMemberRoleWithLock(
+    groupId: string,
+    targetId: string,
+    role: GroupRoleEnum,
+  ): Promise<{
+    saved: GroupMember;
+    beforeRole: GroupRoleEnum;
+    draftInvalidation: DraftInvalidationResult | null;
+  }> {
+    return this.groupMemberRepo.manager.transaction(async (manager) => {
+      const groupMemberRepo = manager.getRepository(GroupMember);
+
+      const members = await groupMemberRepo
+        .createQueryBuilder('gm')
+        .innerJoin('gm.user', 'u')
+        .where('gm.groupId = :groupId', { groupId })
+        .andWhere('gm.deletedAt IS NULL')
+        .andWhere('u.deletedAt IS NULL')
+        .andWhere(
+          new Brackets((qb) => {
+            qb.where('gm.role = :adminRole', {
+              adminRole: GroupRoleEnum.ADMIN,
+            }).orWhere('gm.userId = :targetId', { targetId });
+          }),
+        )
+        .setLock('pessimistic_write', undefined, ['gm'])
+        .getMany();
+
+      const adminMembers = members.filter(
+        (m) => m.role === GroupRoleEnum.ADMIN,
+      );
+      const targetMember = members.find((m) => m.userId === targetId);
+
+      if (!targetMember) {
+        throw new BadRequestException('그룹 멤버가 아닙니다.');
+      }
+
+      if (
+        targetMember.role === GroupRoleEnum.ADMIN &&
+        role !== GroupRoleEnum.ADMIN &&
+        adminMembers.length <= 1
+      ) {
+        throw new ForbiddenException(
+          '유일한 관리자의 권한은 변경할 수 없습니다. 다른 멤버에게 관리자 권한을 부여한 후 다시 시도해주세요.',
+        );
+      }
+
+      const beforeRole = targetMember.role;
+      targetMember.role = role;
+      const saved = await groupMemberRepo.save(targetMember);
+
+      const draftInvalidation =
+        beforeRole !== GroupRoleEnum.VIEWER && role === GroupRoleEnum.VIEWER
+          ? await this.postDraftCleanupService.invalidateOwnedDraftsInGroupWithManager(
+              manager,
+              targetId,
+              groupId,
+              'PERMISSION_REVOKED',
+            )
+          : null;
+
+      return { saved, beforeRole, draftInvalidation };
+    });
+  }
+
   /** 그룹 나가기 */
   async leaveGroup(userId: string, groupId: string) {
-    const group = await this.groupRepo.findOne({
-      where: { id: groupId },
-      relations: ['owner'],
+    let draftInvalidation: DraftInvalidationResult | null = null;
+    let profileMediaDeletionCandidateIds: string[] = [];
+
+    await this.groupMemberRepo.manager.transaction(async (manager) => {
+      const groupMemberRepo = manager.getRepository(GroupMember);
+
+      const members = await groupMemberRepo
+        .createQueryBuilder('gm')
+        .innerJoin('gm.user', 'u')
+        .where('gm.groupId = :groupId', { groupId })
+        .andWhere('gm.deletedAt IS NULL')
+        .andWhere('u.deletedAt IS NULL')
+        .andWhere(
+          new Brackets((qb) => {
+            qb.where('gm.role = :adminRole', {
+              adminRole: GroupRoleEnum.ADMIN,
+            }).orWhere('gm.userId = :userId', { userId });
+          }),
+        )
+        .setLock('pessimistic_write', undefined, ['gm'])
+        .getMany();
+
+      const adminMembers = members.filter(
+        (m) => m.role === GroupRoleEnum.ADMIN,
+      );
+      const meMember = members.find((m) => m.userId === userId);
+
+      if (!meMember) {
+        throw new BadRequestException('그룹 멤버가 아닙니다.');
+      }
+
+      if (meMember.role === GroupRoleEnum.ADMIN && adminMembers.length <= 1) {
+        throw new ForbiddenException(
+          '유일한 관리자는 그룹에서 나갈 수 없습니다. 그룹을 삭제하거나 다른 멤버에게 관리자 권한을 부여한 후 다시 시도해주세요.',
+        );
+      }
+
+      draftInvalidation =
+        await this.postDraftCleanupService.invalidateOwnedDraftsInGroupWithManager(
+          manager,
+          userId,
+          groupId,
+          'GROUP_LEFT',
+        );
+      profileMediaDeletionCandidateIds =
+        meMember.profileMediaId != null
+          ? await this.mediaService.markMediaDeletionCandidatesWithManager(
+              manager,
+              [meMember.profileMediaId],
+            )
+          : [];
+
+      const deleteResult = await groupMemberRepo.softDelete(meMember.id);
+
+      if (deleteResult.affected === 0) {
+        throw new BadRequestException('그룹 멤버가 아닙니다.');
+      }
     });
 
-    if (!group) throw new NotFoundException('그룹이 존재하지 않습니다.');
+    const finalizedDraftInvalidation =
+      draftInvalidation as DraftInvalidationResult | null;
 
-    // 방장은 못 나감 (삭제하거나 양도해야 함)
-    if (group.owner.id === userId) {
-      throw new BadRequestException(
-        '방장은 그룹을 나갈 수 없습니다. 그룹을 삭제하거나 권한을 양도하세요.',
+    if (finalizedDraftInvalidation) {
+      await this.postDraftCleanupService.notifyDraftInvalidations([
+        finalizedDraftInvalidation,
+      ]);
+      await this.mediaService.deleteMediaAssets(
+        Array.from(
+          new Set([
+            ...finalizedDraftInvalidation.mediaDeletionCandidateIds,
+            ...profileMediaDeletionCandidateIds,
+          ]),
+        ),
       );
     }
 
-    const deleteResult = await this.groupMemberRepo.delete({
-      group: { id: groupId },
-      user: { id: userId },
+    await this.groupActivityService.recordActivity({
+      groupId,
+      type: GroupActivityType.MEMBER_LEAVE,
+      actorIds: [userId],
     });
-
-    if (deleteResult.affected === 0) {
-      throw new BadRequestException('그룹 멤버가 아닙니다.');
-    }
   }
 
   /** 그룹 멤버 조회 */
@@ -185,16 +388,20 @@ export class GroupManagementService {
     // 그룹 멤버 조회 (user 관계 포함)
     const members = await this.groupMemberRepo.find({
       where: { groupId },
-      relations: ['user'],
+      relations: ['user', 'profileMedia'],
     });
+
+    const activeMembers = members.filter(
+      (member): member is GroupMember & { user: User } => Boolean(member.user),
+    );
 
     // 응답 형식으로 변환
     return {
       groupName: group.name,
-      groupMemberCount: members.length,
-      members: members.map((member) => ({
+      groupMemberCount: activeMembers.length,
+      members: activeMembers.map((member) => ({
         memberId: member.user.id,
-        profileImageId: member.user.profileImageId,
+        profileImageId: member.profileMediaId ?? null,
       })),
     };
   }
@@ -206,23 +413,7 @@ export class GroupManagementService {
     assetId: string,
     sourcePostId: string,
   ): Promise<UpdateGroupCoverResponseDto> {
-    // 1. 그룹 존재 확인 및 멤버 여부 확인
-    const member = await this.groupMemberRepo.findOne({
-      where: { groupId, userId },
-      relations: ['group'],
-    });
-
-    if (!member) {
-      const groupExists = await this.groupRepo.exists({
-        where: { id: groupId },
-      });
-      if (!groupExists) {
-        throw new NotFoundException('존재하지 않는 그룹입니다.');
-      }
-      throw new ForbiddenException('그룹 멤버가 아닙니다.');
-    }
-
-    // 2. 게시글 존재 및 그룹 소속 확인
+    // 1. 게시글 존재 및 그룹 소속 확인
     const post = await this.postRepo.findOne({
       where: { id: sourcePostId },
     });
@@ -235,7 +426,7 @@ export class GroupManagementService {
       throw new BadRequestException('해당 그룹의 게시글이 아닙니다.');
     }
 
-    // 3. Asset 존재 및 게시글 내 포함 여부 확인 (Block 이미지인지)
+    // 2. Asset 존재 및 게시글 내 포함 여부 확인 (Block 이미지인지)
     const postMedia = await this.postMediaRepo.findOne({
       where: {
         postId: sourcePostId,
@@ -251,13 +442,20 @@ export class GroupManagementService {
       );
     }
 
-    // 4. 그룹 정보 업데이트
+    // 3. 그룹 정보 업데이트
     await this.groupRepo.update(groupId, {
       coverMediaId: assetId,
       coverSourcePostId: sourcePostId,
     });
 
-    // 5. 응답 반환
+    await this.groupActivityService.recordActivity({
+      groupId,
+      type: GroupActivityType.GROUP_COVER_UPDATE,
+      actorIds: [userId],
+      meta: null,
+    });
+
+    // 4. 응답 반환
     return {
       groupId,
       cover: {
@@ -270,64 +468,83 @@ export class GroupManagementService {
     };
   }
 
+  async resetGroupCover(
+    userId: string,
+    groupId: string,
+  ): Promise<{
+    groupId: string;
+    cover: null;
+    updatedAt: Date;
+  }> {
+    await this.groupRepo.update(groupId, {
+      coverMediaId: null,
+      coverSourcePostId: null,
+    });
+
+    await this.groupActivityService.recordActivity({
+      groupId,
+      type: GroupActivityType.GROUP_COVER_UPDATE,
+      actorIds: [userId],
+      meta: { reset: true },
+    });
+
+    return {
+      groupId,
+      cover: null,
+      updatedAt: new Date(),
+    };
+  }
+
   /** 그룹 설정 정보 조회 */
   async getGroupSettings(
     userId: string,
     groupId: string,
   ): Promise<GetGroupSettingsResponseDto> {
-    // 1. 그룹 존재 및 멤버 권한 확인
-    const requesterMember = await this.groupMemberRepo.findOne({
-      where: { groupId, userId },
-    });
-
-    if (!requesterMember) {
-      const groupExists = await this.groupRepo.exists({
-        where: { id: groupId },
-      });
-      if (!groupExists) {
-        throw new NotFoundException('존재하지 않는 그룹입니다.');
-      }
-      throw new ForbiddenException('그룹 멤버가 아닙니다.');
-    }
-
-    // 2. 그룹 정보 조회 (커버 이미지 및 owner 포함)
+    // 1. 그룹 정보 조회 (커버 이미지 포함)
     const group = await this.groupRepo.findOne({
       where: { id: groupId },
-      relations: ['coverMedia', 'owner'],
+      relations: ['coverMedia'],
     });
 
     if (!group) throw new NotFoundException('존재하지 않는 그룹입니다.');
 
-    // 3. 전체 멤버 조회 (유저 정보 및 프로필 이미지 포함)
+    // 2. 전체 멤버 조회 (유저 정보 및 프로필 이미지 포함)
     const members = await this.groupMemberRepo.find({
       where: { groupId },
-      relations: ['user', 'user.profileImage'],
+      relations: ['user', 'profileMedia'],
       order: { joinedAt: 'ASC' },
     });
 
-    // 4. 응답 구성
-    const meMember = members.find((m) => m.userId === userId);
+    const activeMembers = members.filter(
+      (member): member is GroupMember & { user: User } => Boolean(member.user),
+    );
+
+    // 3. 응답 구성
+    const meMember = activeMembers.find((m) => m.userId === userId);
     if (!meMember) throw new ForbiddenException('그룹 멤버가 아닙니다.');
+
+    if (group.coverMediaId || group.coverSourcePostId) {
+      this.cleanupStaleGroupCover(groupId);
+    }
+    const coverMedia =
+      group.coverMedia && !group.coverMedia.deletedAt ? group.coverMedia : null;
 
     const groupDto = {
       groupId: group.id,
       name: group.name,
       createdAt: group.createdAt,
-      ownerUserId: group.owner.id,
-      cover: group.coverMedia
+      cover: coverMedia
         ? {
-            assetId: group.coverMedia.id,
+            assetId: coverMedia.id,
             sourcePostId: group.coverSourcePostId || '',
           }
-        : null,
+        : await this.findLatestGroupCover(groupId),
     };
 
-    const memberDtos = members.map((m) => ({
+    const memberDtos = activeMembers.map((m) => ({
       userId: m.user.id,
       name: m.user.nickname,
-      profileImage: m.user.profileImage
-        ? { assetId: m.user.profileImage.id }
-        : null,
+      profileImage: m.profileMedia ? { assetId: m.profileMedia.id } : null,
       role: m.role,
       nicknameInGroup: m.nicknameInGroup,
       joinedAt: m.joinedAt,
@@ -336,8 +553,8 @@ export class GroupManagementService {
     const meDto = {
       userId: meMember.user.id,
       name: meMember.user.nickname,
-      profileImage: meMember.user.profileImage
-        ? { assetId: meMember.user.profileImage.id }
+      profileImage: meMember.profileMedia
+        ? { assetId: meMember.profileMedia.id }
         : null,
       role: meMember.role,
       nicknameInGroup: meMember.nicknameInGroup,
@@ -356,24 +573,10 @@ export class GroupManagementService {
     userId: string,
     groupId: string,
   ): Promise<GetGroupMemberMeResponseDto> {
-    // 1. 멤버 조회 (유저 및 프로필 미디어 포함)
-    const member = await this.groupMemberRepo.findOne({
-      where: { groupId, userId },
+    const member = await this.groupService.ensureMember(userId, groupId, {
       relations: ['user', 'profileMedia'],
     });
 
-    // 2. 멤버가 없는 경우 예외 처리
-    if (!member) {
-      const groupExists = await this.groupRepo.exists({
-        where: { id: groupId },
-      });
-      if (!groupExists) {
-        throw new NotFoundException('존재하지 않는 그룹입니다.');
-      }
-      throw new ForbiddenException('그룹 멤버가 아닙니다.');
-    }
-
-    // 3. 응답 DTO 반환
     return {
       groupId: member.groupId,
       userId: member.userId,
@@ -389,6 +592,44 @@ export class GroupManagementService {
     };
   }
 
+  /** 그룹 내 내 권한(role)만 조회 */
+  async getGroupPermission(
+    userId: string,
+    groupId: string,
+  ): Promise<GetGroupPermissionResponseDto> {
+    const member = await this.groupService.ensureMember(userId, groupId, {
+      select: { role: true, notificationMuted: true },
+    });
+    return {
+      role: member.role,
+      notificationMuted: Boolean(member.notificationMuted),
+    };
+  }
+
+  async toggleGroupNotification(
+    userId: string,
+    groupId: string,
+    muted: boolean,
+  ): Promise<void> {
+    await this.groupService.ensureMember(userId, groupId, {
+      select: { id: true },
+    });
+    await this.groupMemberRepo.update(
+      { userId, groupId },
+      { notificationMuted: muted },
+    );
+  }
+
+  async markGroupAsRead(userId: string, groupId: string): Promise<void> {
+    await this.groupService.ensureMember(userId, groupId, {
+      select: { id: true },
+    });
+    await this.groupMemberRepo.update(
+      { userId, groupId },
+      { lastReadAt: new Date() },
+    );
+  }
+
   /** 그룹 내 내 설정 정보 수정 */
   async updateGroupMemberMe(
     userId: string,
@@ -398,32 +639,23 @@ export class GroupManagementService {
     const { nicknameInGroup, profileMediaId } = dto;
 
     // 1. 변경 사항이 하나도 없으면 오류 반환
-    if (!nicknameInGroup && !profileMediaId) {
+    if (nicknameInGroup === undefined && profileMediaId === undefined) {
       throw new BadRequestException('변경할 내용이 없습니다.');
     }
 
     // 2. 멤버 조회 (유저 포함)
-    const member = await this.groupMemberRepo.findOne({
-      where: { groupId, userId },
+    const member = await this.groupService.ensureMember(userId, groupId, {
       relations: ['user'],
     });
 
-    if (!member) {
-      const groupExists = await this.groupRepo.exists({
-        where: { id: groupId },
-      });
-      if (!groupExists) {
-        throw new NotFoundException('존재하지 않는 그룹입니다.');
-      }
-      throw new ForbiddenException('그룹 멤버가 아닙니다.');
-    }
+    const beforeNickname = member.nicknameInGroup ?? null;
 
     // 3. 닉네임 수정 시 유효성 검사 및 업데이트
     if (nicknameInGroup !== undefined) {
       if (nicknameInGroup === member.nicknameInGroup) {
         // 이미 동일한 닉네임이면 무시하거나 처리 (여기서는 전체 변경 없음을 체크했으므로 진행)
       } else {
-        member.nicknameInGroup = this.validateGroupNickname(nicknameInGroup);
+        member.nicknameInGroup = validateGroupNickname(nicknameInGroup);
       }
     }
 
@@ -448,27 +680,34 @@ export class GroupManagementService {
     // 5. 저장
     await this.groupMemberRepo.save(member);
 
+    if (
+      nicknameInGroup !== undefined &&
+      member.nicknameInGroup !== beforeNickname
+    ) {
+      await this.groupActivityService.recordActivity({
+        groupId,
+        type: GroupActivityType.MEMBER_NICKNAME_CHANGE,
+        actorIds: [userId],
+        meta: {
+          beforeNickname,
+          afterNickname: member.nicknameInGroup ?? null,
+        },
+      });
+    }
+
     // 6. 업데이트된 정보 재조회 (관련 필드 포함)
     return this.getGroupMemberMe(userId, groupId);
   }
 
   /** 그룹 커버 후보 조회 (월 단위, 커서 페이지네이션) */
   async getGroupCoverCandidates(
-    userId: string,
+    _userId: string,
     groupId: string,
     query: GetGroupCoverCandidatesQueryDto,
   ): Promise<GetGroupCoverCandidatesResponseDto> {
     const { month, cursor, limit = 20 } = query;
 
-    // 1. 그룹 멤버십 확인
-    const member = await this.groupMemberRepo.findOne({
-      where: { groupId, userId },
-    });
-    if (!member) {
-      throw new ForbiddenException('그룹 멤버가 아닙니다.');
-    }
-
-    // 2. 날짜 범위 계산 (UTC 기준)
+    // 1. 날짜 범위 계산 (UTC 기준)
     // month string: "YYYY-MM"
     const [yearStr, monthStr] = month.split('-');
     const year = parseInt(yearStr, 10);
@@ -477,7 +716,7 @@ export class GroupManagementService {
     const startOfMonth = new Date(Date.UTC(year, m - 1, 1, 0, 0, 0));
     const endOfMonth = new Date(Date.UTC(year, m, 0, 23, 59, 59, 999));
 
-    // 3. 커서 디코딩
+    // 2. 커서 디코딩
     // Cursor format: Base64(timestamp__id)
     let cursorTime: Date | null = null;
     let cursorId: string | null = null;
@@ -496,7 +735,7 @@ export class GroupManagementService {
       }
     }
 
-    // 4. Query Builder 생성
+    // 3. Query Builder 생성
     const qb = this.postRepo.createQueryBuilder('post');
 
     qb.leftJoinAndSelect('post.group', 'group')
@@ -581,18 +820,47 @@ export class GroupManagementService {
     };
   }
 
-  private validateGroupNickname(nickname: string): string {
-    const trimmed = nickname.trim();
-    if (trimmed.length < 2 || trimmed.length > 50) {
-      throw new BadRequestException(
-        '닉네임은 2자 이상 50자 이하이어야 합니다.',
-      );
+  private async findLatestGroupCover(
+    groupId: string,
+  ): Promise<{ assetId: string; sourcePostId: string } | null> {
+    const latestMedia = await this.postMediaRepo
+      .createQueryBuilder('pm')
+      .innerJoin('pm.post', 'post')
+      .where('post.groupId = :groupId', { groupId })
+      .andWhere('post.deletedAt IS NULL')
+      .andWhere('pm.kind = :kind', { kind: PostMediaKind.BLOCK })
+      .orderBy('post.eventAt', 'DESC')
+      .addOrderBy('post.createdAt', 'DESC')
+      .addOrderBy('pm.sortOrder', 'ASC')
+      .addOrderBy('pm.createdAt', 'ASC')
+      .getOne();
+
+    if (!latestMedia) {
+      return null;
     }
-    if (!GROUP_NICKNAME_REGEX.test(trimmed)) {
-      throw new BadRequestException(
-        '닉네임은 한글, 영문, 숫자, 공백만 허용됩니다.',
-      );
-    }
-    return trimmed;
+
+    return {
+      assetId: latestMedia.mediaId,
+      sourcePostId: latestMedia.postId,
+    };
+  }
+
+  private cleanupStaleGroupCover(groupId: string) {
+    void this.groupRepo
+      .createQueryBuilder()
+      .update()
+      .set({ coverMediaId: null, coverSourcePostId: null })
+      .where('id = :groupId', { groupId })
+      .andWhere(
+        '("cover_media_id" IN (SELECT id FROM media_assets WHERE deleted_at IS NOT NULL) OR "cover_source_post_id" IN (SELECT id FROM posts WHERE deleted_at IS NOT NULL))',
+      )
+      .execute()
+      .catch((error) => {
+        const message =
+          error instanceof Error ? error.message : 'unknown error';
+        this.logger.warn(
+          `Failed to cleanup stale group cover (groupId=${groupId}): ${message}`,
+        );
+      });
   }
 }

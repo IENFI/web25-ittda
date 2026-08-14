@@ -7,10 +7,10 @@ import {
   MapPin,
   Star,
   Search,
-  Layout,
   Table,
-  Save,
   Type,
+  Layout,
+  Save,
 } from 'lucide-react';
 import { FieldType } from '@/lib/types/record';
 
@@ -33,35 +33,52 @@ interface ToolbarProps {
   }) => void;
 }
 
+// TODO: 템플릿 관련 임시 주석처리
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export default function Toolbar({ onAddBlock, onOpenDrawer }: ToolbarProps) {
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 max-w-4xl mx-auto flex flex-col gap-3 w-full">
       {/* 상단 플로팅 버튼 */}
-      <div className="w-full flex gap-3 justify-start px-6">
+      {/* <div className="w-full flex gap-3 justify-start px-6">
         <button
-          onClick={() => onOpenDrawer({ type: 'layout' })}
+          onClick={() => {}}
           className="flex items-center gap-2 px-3 md:px-6 py-3 rounded-full bg-[#333333] text-white text-xs md:text-sm font-bold shadow-xl active:scale-95 transition-all"
         >
           <Layout size={18} /> 레이아웃 템플릿
         </button>
         <button
-          onClick={() => onOpenDrawer({ type: 'saveLayout' })}
+          onClick={() => {}}
           className="flex items-center gap-2 px-3 md:px-6 py-3 rounded-full bg-[#10B981] text-white text-xs md:text-sm font-bold shadow-xl active:scale-95 transition-all"
         >
           <Save size={18} /> 내 템플릿 저장
         </button>
-      </div>
+      </div> */}
 
-      <div className="w-full bg-white dark:bg-[#2A2A2A] border-t border-gray-100 dark:border-white/5 p-4 flex justify-around items-center">
-        {TOOL_ITEMS.map(({ id, Icon }) => (
-          <button
-            key={id}
-            onClick={() => onAddBlock(id as FieldType)}
-            className="p-2 text-itta-gray3 hover:text-[#10B981] dark:text-gray-500 dark:hover:text-[#10B981] transition-colors active:scale-110"
-          >
-            <Icon size={24} strokeWidth={1.5} />
-          </button>
-        ))}
+      <div
+        className="w-full bg-white dark:bg-[#2A2A2A] border-t border-gray-100 dark:border-white/5 px-2 pt-4 sm:px-4 sm:pt-3 flex justify-around items-center"
+        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.75rem)' }}
+      >
+        {/* 코치마크 스포트라이트가 세이프에어리어 패딩까지 포함하지 않고
+            아이콘 줄에만 딱 맞도록 별도 래퍼에 타겟을 건다 */}
+        <div
+          data-tutorial-id="tutorial-editor-toolbar"
+          className="w-full flex justify-around items-center"
+        >
+          {TOOL_ITEMS.map(({ id, Icon }) => (
+            <button
+              key={id}
+              onClick={() => onAddBlock(id as FieldType)}
+              data-tutorial-id={
+                id === 'location' ? 'tutorial-editor-location' : undefined
+              }
+              className="p-1.5 sm:p-2 text-itta-gray3 hover:text-[#10B981] dark:text-gray-500 dark:hover:text-[#10B981] transition-colors active:scale-110"
+            >
+              <Icon size={20} strokeWidth={1.5} className="sm:hidden" />
+              <Icon size={24} strokeWidth={1.5} className="hidden sm:block" />
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

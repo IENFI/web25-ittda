@@ -8,6 +8,7 @@ import type { Repository } from 'typeorm';
 
 import { AppModule } from '../src/app.module';
 import { PostScope } from '../src/enums/post-scope.enum';
+import { PostMood } from '../src/enums/post-mood.enum';
 import { Post } from '../src/modules/post/entity/post.entity';
 import { PostDraft } from '../src/modules/post/entity/post-draft.entity';
 import { User } from '../src/modules/user/entity/user.entity';
@@ -21,7 +22,6 @@ describe('PostController (e2e)', () => {
   let app: INestApplication<App>;
   let userRepository: Repository<User>;
   let postRepository: Repository<Post>;
-  let postDraftRepository: Repository<PostDraft>;
   let postDraftRepository: Repository<PostDraft>;
   let groupRepository: Repository<Group>;
   let groupMemberRepository: Repository<GroupMember>;
@@ -53,7 +53,6 @@ describe('PostController (e2e)', () => {
     userRepository = app.get(getRepositoryToken(User));
     postRepository = app.get(getRepositoryToken(Post));
     postDraftRepository = app.get(getRepositoryToken(PostDraft));
-    postDraftRepository = app.get(getRepositoryToken(PostDraft));
     groupRepository = app.get(getRepositoryToken(Group));
     groupMemberRepository = app.get(getRepositoryToken(GroupMember));
     const jwtService = app.get(JwtService);
@@ -82,14 +81,14 @@ describe('PostController (e2e)', () => {
     if (owner?.id) {
       await postRepository.delete({ ownerUserId: owner.id });
       await postDraftRepository.delete({ ownerActorId: owner.id });
-      await postDraftRepository.delete({ ownerActorId: owner.id });
-      await groupRepository.delete({ owner: { id: owner.id } });
+      await groupRepository.delete({ name: '활동 그룹' });
+      await groupRepository.delete({ name: 'draft 그룹' });
       await userRepository.delete({ id: owner.id });
     }
     if (otherUser?.id) {
       await userRepository.delete({ id: otherUser.id });
     }
-    await app.close();
+    if (app) await app.close();
   });
 
   it('POST /posts should create a post and be retrievable', async () => {
@@ -137,15 +136,6 @@ describe('PostController (e2e)', () => {
           },
           layout: { row: 4, col: 2, span: 1 },
         },
-        {
-          type: 'IMAGE',
-          value: {
-            tempUrls: [
-              'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&q=80&w=800',
-            ],
-          },
-          layout: { row: 5, col: 1, span: 2 },
-        },
       ],
     };
 
@@ -178,9 +168,6 @@ describe('PostController (e2e)', () => {
     expect(created.ownerUserId).toBe(owner.id);
     expect(created.blocks.length).toBeGreaterThan(0);
     expect(created.contributors[0]?.userId).toBe(owner.id);
-    expect(
-      created.blocks.find((b) => b.type === 'IMAGE')?.value?.tempUrls?.length,
-    ).toBeGreaterThan(0);
     expect(created.blocks.find((b) => b.type === 'MOOD')?.value?.mood).toBe(
       '행복',
     );
@@ -253,6 +240,7 @@ describe('PostController (e2e)', () => {
     const notFoundRes = await request(app.getHttpServer())
       .get(`/posts/${created.id}`)
       .set('Authorization', `Bearer ${accessToken}`)
+      .set('x-test-expected-4xx', 'true')
       .expect(404);
 
     expect(notFoundRes.body).toMatchObject({
@@ -266,7 +254,14 @@ describe('PostController (e2e)', () => {
     const group = await groupRepository.save(
       groupRepository.create({
         name: '활동 그룹',
-        owner: { id: owner.id } as User,
+      }),
+    );
+    await groupMemberRepository.save(
+      groupMemberRepository.create({
+        groupId: group.id,
+        userId: owner.id,
+        role: GroupRoleEnum.ADMIN,
+        nicknameInGroup: owner.nickname,
       }),
     );
 
@@ -341,11 +336,10 @@ describe('PostController (e2e)', () => {
     await groupRepository.delete({ id: group.id });
   });
 
-  it('GET /groups/:groupId/posts/new should reuse active draft', async () => {
+  it('GET /groups/:groupId/posts/new should create up to 5 active drafts', async () => {
     const group = await groupRepository.save(
       groupRepository.create({
         name: 'draft 그룹',
-        owner: { id: owner.id } as User,
       }),
     );
     await groupMemberRepository.save(
@@ -357,23 +351,33 @@ describe('PostController (e2e)', () => {
       }),
     );
 
-    const firstRes = await request(app.getHttpServer())
+    const draftIds: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const response = await request(app.getHttpServer())
+        .get(`/groups/${group.id}/posts/new`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+      const draftId = (
+        response.body as { redirectUrl: string }
+      ).redirectUrl.split('/post/')[1];
+      expect(draftId).toBeDefined();
+      draftIds.push(draftId);
+    }
+
+    expect(new Set(draftIds).size).toBe(5);
+
+    const sixthRes = await request(app.getHttpServer())
       .get(`/groups/${group.id}/posts/new`)
       .set('Authorization', `Bearer ${accessToken}`)
-      .expect(302);
+      .set('x-test-expected-4xx', 'true')
+      .expect(409);
+    expect(sixthRes.body).toMatchObject({
+      statusCode: 409,
+      message: 'Active create draft limit reached.',
+      error: 'Conflict',
+    });
 
-    const firstLocation = firstRes.header.location;
-    const firstDraftId = firstLocation.split('/posts/')[1]?.split('/edit')[0];
-    expect(firstDraftId).toBeDefined();
-
-    const secondRes = await request(app.getHttpServer())
-      .get(`/groups/${group.id}/posts/new`)
-      .set('Authorization', `Bearer ${accessToken}`)
-      .expect(302);
-
-    const secondLocation = secondRes.header.location;
-    const secondDraftId = secondLocation.split('/posts/')[1]?.split('/edit')[0];
-    expect(secondDraftId).toBe(firstDraftId);
+    const firstDraftId = draftIds[0];
 
     const draftRes = await request(app.getHttpServer())
       .get(`/groups/${group.id}/drafts/${firstDraftId}`)
@@ -438,6 +442,7 @@ describe('PostController (e2e)', () => {
     const forbiddenRes = await request(app.getHttpServer())
       .get(`/posts/${created.id}`)
       .set('Authorization', `Bearer ${otherAccessToken}`)
+      .set('x-test-expected-4xx', 'true')
       .expect(403);
 
     expect(forbiddenRes.body).toMatchObject({
@@ -481,6 +486,7 @@ describe('PostController (e2e)', () => {
     const forbiddenRes = await request(app.getHttpServer())
       .delete(`/posts/${created.id}`)
       .set('Authorization', `Bearer ${otherAccessToken}`)
+      .set('x-test-expected-4xx', 'true')
       .expect(403);
 
     expect(forbiddenRes.body).toMatchObject({
@@ -511,6 +517,7 @@ describe('PostController (e2e)', () => {
     const badRes = await request(app.getHttpServer())
       .post('/posts')
       .set('Authorization', `Bearer ${accessToken}`)
+      .set('x-test-expected-4xx', 'true')
       .send(payload)
       .expect(400);
 
@@ -552,6 +559,7 @@ describe('PostController (e2e)', () => {
     const badRes = await request(app.getHttpServer())
       .post('/posts')
       .set('Authorization', `Bearer ${accessToken}`)
+      .set('x-test-expected-4xx', 'true')
       .send(payload)
       .expect(400);
 
@@ -566,9 +574,10 @@ describe('PostController (e2e)', () => {
       error: 'Bad Request',
     });
     expect(Array.isArray(badBody.message)).toBe(true);
-    expect(badBody.message.join(' ')).toContain(
-      'mood must be one of: 행복, 좋음, 만족, 재미, 보통, 피곤, 놀람, 화남, 슬픔, 아픔, 짜증',
-    );
+    const allowedMoodMessage = `mood must be one of: ${Object.values(
+      PostMood,
+    ).join(', ')}`;
+    expect(badBody.message.join(' ')).toContain(allowedMoodMessage);
   });
 
   it('POST /posts should allow up to 4 MOOD blocks', async () => {
@@ -603,12 +612,12 @@ describe('PostController (e2e)', () => {
         },
         {
           type: 'MOOD',
-          value: { mood: '보통' },
+          value: { mood: '불안' },
           layout: { row: 4, col: 1, span: 1 },
         },
         {
           type: 'MOOD',
-          value: { mood: '좋음' },
+          value: { mood: '우울' },
           layout: { row: 4, col: 2, span: 1 },
         },
       ],
@@ -672,6 +681,7 @@ describe('PostController (e2e)', () => {
     const badRes = await request(app.getHttpServer())
       .post('/posts')
       .set('Authorization', `Bearer ${accessToken}`)
+      .set('x-test-expected-4xx', 'true')
       .send(payload)
       .expect(400);
 
@@ -713,6 +723,7 @@ describe('PostController (e2e)', () => {
     const badRes = await request(app.getHttpServer())
       .post('/posts')
       .set('Authorization', `Bearer ${accessToken}`)
+      .set('x-test-expected-4xx', 'true')
       .send(payload)
       .expect(400);
 
@@ -763,6 +774,7 @@ describe('PostController (e2e)', () => {
     const badRes = await request(app.getHttpServer())
       .post('/posts')
       .set('Authorization', `Bearer ${accessToken}`)
+      .set('x-test-expected-4xx', 'true')
       .send(payload)
       .expect(400);
 
@@ -811,6 +823,7 @@ describe('PostController (e2e)', () => {
     const badRes = await request(app.getHttpServer())
       .post('/posts')
       .set('Authorization', `Bearer ${accessToken}`)
+      .set('x-test-expected-4xx', 'true')
       .send(payload)
       .expect(400);
 

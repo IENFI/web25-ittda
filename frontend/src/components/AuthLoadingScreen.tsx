@@ -14,7 +14,7 @@ const LOADING_MESSAGES: Record<LoadingType, { title: string; desc: string }> = {
   },
 
   publish: {
-    title: '공동 기록을 발행하는 중입니다',
+    title: '기록을 발행하는 중입니다',
     desc: '소중한 기억이 곧 업로드됩니다...',
   },
 };
@@ -27,8 +27,9 @@ export default function AuthLoadingScreen({
 
   return (
     <div
+      data-auth-loading
       className={cn(
-        'bg-black/50 backdrop-blur-sm fixed inset-0 z-50 flex items-center justify-center',
+        'bg-black/50 backdrop-blur-sm fixed inset-0 z-[9999] flex items-center justify-center',
         className,
       )}
     >

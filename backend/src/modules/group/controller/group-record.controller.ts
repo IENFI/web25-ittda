@@ -1,7 +1,8 @@
 import {
   Controller,
-  Patch,
+  Delete,
   Get,
+  Patch,
   Param,
   Body,
   Query,
@@ -27,12 +28,14 @@ import {
 import { GetGroupDailyArchiveQueryDto } from '../dto/get-group-daily-archive.query.dto';
 import { GetGroupMonthImagesQueryDto } from '../dto/get-group-month-images.query.dto';
 import { ApiWrappedOkResponse } from '@/common/swagger/api-wrapped-response.decorator';
+import { GroupMonthRecordResponseDto } from '../dto/group-month-record.response.dto';
 import { PaginatedGroupMonthRecordResponseDto } from '../dto/group-month-record.response.dto';
 import { GroupDayRecordResponseDto } from '../dto/group-day-record.response.dto';
-import { PaginatedGroupMonthCoverCandidateResponseDto } from '../dto/group-month-cover-candidates-response.dto';
 import { GetGroupCoverCandidatesQueryDto } from '../dto/get-group-cover-candidates.query.dto';
 import { GroupCoverCandidatesResponseDto } from '../dto/group-cover-candidates.response.dto';
 import { parseYearMonth } from '@/common/utils/parseDateValidator';
+import { User } from '@/common/decorators/user.decorator';
+import type { MyJwtPayload } from '@/modules/auth/auth.type';
 
 @ApiTags('group-records')
 @ApiBearerAuth('bearerAuth')
@@ -59,6 +62,7 @@ export class GroupRecordController {
   @ApiParam({ name: 'yyyy_mm', description: '연-월 (예: 2026-01)' })
   @ApiWrappedOkResponse({ type: Object })
   async updateMonthCover(
+    @User() user: MyJwtPayload,
     @Param('groupId') groupId: string,
     @Param('yyyy_mm') yyyy_mm: string,
     @Body() body: UpdateGroupMonthCoverDto,
@@ -66,11 +70,43 @@ export class GroupRecordController {
     const { year, month } = parseYearMonth(yyyy_mm);
 
     const result = await this.groupRecordService.updateMonthCover(
+      user.sub,
       groupId,
       year,
       month,
       body.assetId,
       body.sourcePostId,
+    );
+
+    return { data: result };
+  }
+
+  /**
+   * 그룹 월별 커버 초기화
+   */
+  @UseGuards(GroupRoleGuard)
+  @GroupRoles(GroupRoleEnum.EDITOR)
+  @Delete(':groupId/archives/months/:yyyy_mm/cover')
+  @ApiOperation({
+    summary: '그룹 월별 커버 초기화',
+    description:
+      '특정 월의 카드 커버를 기본값으로 되돌립니다. EDITOR 이상의 권한이 필요합니다.',
+  })
+  @ApiParam({ name: 'groupId', description: '그룹 ID' })
+  @ApiParam({ name: 'yyyy_mm', description: '연-월 (예: 2026-01)' })
+  @ApiWrappedOkResponse({ type: Object })
+  async resetMonthCover(
+    @User() user: MyJwtPayload,
+    @Param('groupId') groupId: string,
+    @Param('yyyy_mm') yyyy_mm: string,
+  ) {
+    const { year, month } = parseYearMonth(yyyy_mm);
+
+    const result = await this.groupRecordService.resetMonthCover(
+      user.sub,
+      groupId,
+      year,
+      month,
     );
 
     return { data: result };
@@ -87,21 +123,31 @@ export class GroupRecordController {
     description: '그룹의 월별 기록 요약 목록을 조회합니다.',
   })
   @ApiParam({ name: 'groupId', description: '그룹 ID' })
-  @ApiWrappedOkResponse({ type: PaginatedGroupMonthRecordResponseDto })
+  @ApiWrappedOkResponse({ type: Object })
   async getMonthlyArchive(
     @Param('groupId') groupId: string,
     @Query() query: GetGroupMonthlyArchiveQueryDto,
-  ) {
-    const year = query.year; // optional
+  ): Promise<{
+    data: GroupMonthRecordResponseDto[] | PaginatedGroupMonthRecordResponseDto;
+  }> {
+    const year = query.year;
     const sort = query.sort ?? GroupArchiveSortEnum.LATEST;
-    const { cursor, limit = 12 } = query;
+
+    if (query.allYears) {
+      const data = await this.groupRecordService.getMonthlyArchiveInfinite(
+        groupId,
+        sort,
+        query.cursor,
+        query.limit,
+      );
+
+      return { data };
+    }
 
     const data = await this.groupRecordService.getMonthlyArchive(
       groupId,
       year as number,
       sort,
-      cursor,
-      Number(limit),
     );
 
     return { data };
@@ -145,7 +191,7 @@ export class GroupRecordController {
     description: '특정 월의 모든 기록에서 사용된 이미지 목록을 조회합니다.',
   })
   @ApiParam({ name: 'groupId', description: '그룹 ID' })
-  @ApiWrappedOkResponse({ type: PaginatedGroupMonthCoverCandidateResponseDto })
+  @ApiWrappedOkResponse({ type: GroupCoverCandidatesResponseDto })
   async getMonthImages(
     @Param('groupId') groupId: string,
     @Query() query: GetGroupMonthImagesQueryDto,
@@ -173,7 +219,7 @@ export class GroupRecordController {
   @ApiOperation({
     summary: '그룹 커버 후보 조회',
     description:
-      '특정 월의 모든 기록에서 사용된 이미지 목록을 날짜별로 그룹화하여 조회합니다.',
+      '그룹의 모든 기록에서 사용된 이미지 목록을 날짜별로 그룹화하여 조회합니다.',
   })
   @ApiParam({ name: 'groupId', description: '그룹 ID' })
   @ApiWrappedOkResponse({ type: GroupCoverCandidatesResponseDto })
@@ -181,13 +227,9 @@ export class GroupRecordController {
     @Param('groupId') groupId: string,
     @Query() query: GetGroupCoverCandidatesQueryDto,
   ) {
-    const { month, cursor, limit = 20 } = query;
-    const { year, month: m } = parseYearMonth(month);
-
+    const { cursor, limit = 20 } = query;
     const data = await this.groupRecordService.getCoverCandidates(
       groupId,
-      year,
-      m,
       cursor,
       Number(limit),
     );

@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { GroupRoleEnum } from '@/enums/group-role.enum';
 
 export class GroupCoverDto {
   @ApiProperty({ description: '커버 이미지 Asset ID' })
@@ -60,6 +61,15 @@ export class GroupItemDto {
     nullable: true,
   })
   latestPost: GroupLatestPostDto | null;
+
+  @ApiProperty({ description: '내 권한', enum: GroupRoleEnum, nullable: true })
+  permission: GroupRoleEnum | null;
+
+  @ApiProperty({ description: '알림 음소거 여부' })
+  notificationMuted: boolean;
+
+  @ApiProperty({ description: '읽지 않은 활동 여부' })
+  hasUnread: boolean;
 }
 
 export class GetGroupsResponseDto {

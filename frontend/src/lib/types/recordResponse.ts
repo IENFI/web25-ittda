@@ -1,5 +1,5 @@
 import { GroupCover, LatestPost } from './group';
-import { Block, RecordScope, TagValue } from './record';
+import { Block, MapPostItem, RecordScope, TagValue } from './record';
 import { LocationValue, RatingValue, RecordBlock } from './recordField';
 
 /**
@@ -9,6 +9,9 @@ export interface Contributor {
   userId: string;
   role: 'AUTHOR' | 'CONTRIBUTOR';
   nickname: string;
+  groupNickname: string;
+  groupProfileImageId: null | string;
+  profileImageId: string | null;
 }
 
 /**
@@ -24,12 +27,15 @@ export interface RecordDetail {
   updatedAt: string;
   blocks: RecordBlock[];
   contributors: Contributor[];
+  hasActiveEditDraft?: boolean;
 }
 
 export interface RecordPreview {
   postId: string;
   scope: 'ME' | 'GROUP';
+  contributors: Contributor[];
   groupId: string | null;
+  groupName?: string | null;
   title: string;
   eventAt: string;
   createdAt: string;
@@ -39,6 +45,7 @@ export interface RecordPreview {
   emotion: string[];
   rating: RatingValue['rating'] | null;
   blocks: Block[];
+  hasActiveEditDraft?: boolean;
 }
 
 export interface newGroupResponse {
@@ -62,6 +69,9 @@ export interface GroupSummary {
   createdAt: string;
   lastActivityAt: string;
   latestPost: LatestPost | null;
+  permission: 'ADMIN' | 'EDITOR' | 'VIEWER';
+  notificationMuted: boolean;
+  hasUnread: boolean;
 }
 
 export interface Unread {
@@ -117,6 +127,11 @@ export interface MonthlyRecordList {
   latestLocation: string | null;
 }
 
+export interface PaginatedMonthlyRecordListResponse {
+  items: MonthlyRecordList[];
+  nextCursor: string | null;
+}
+
 export interface DailyRecordList {
   date: string;
   postCount: number;
@@ -137,3 +152,9 @@ export interface MontlyCoverUpdateResponse {
   coverAssetId: string;
 }
 export type MyDailyRecordedDatesResponse = string[];
+
+export interface MapListResponse {
+  items: MapPostItem[];
+  hasNextPage: boolean;
+  nextCursor: string | null;
+}

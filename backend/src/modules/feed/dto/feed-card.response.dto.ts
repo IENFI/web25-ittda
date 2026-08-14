@@ -1,6 +1,7 @@
 import { PostBlockType } from '@/enums/post-block-type.enum';
 import { BlockValueMap } from '@/modules/post/types/post-block.types';
 import { PostMood } from '@/enums/post-mood.enum';
+import { PostContributorRole } from '@/enums/post-contributor-role.enum';
 import {
   ApiExtraModels,
   ApiProperty,
@@ -45,6 +46,26 @@ export class FeedBlockDto {
   layout: BlockLayoutDto;
 }
 
+export class FeedContributorDto {
+  @ApiProperty({ format: 'uuid' })
+  userId: string;
+
+  @ApiProperty({ enum: PostContributorRole })
+  role: PostContributorRole;
+
+  @ApiPropertyOptional()
+  nickname?: string | null;
+
+  @ApiPropertyOptional()
+  groupNickname?: string | null;
+
+  @ApiPropertyOptional({ format: 'uuid' })
+  profileImageId?: string | null;
+
+  @ApiPropertyOptional({ format: 'uuid' })
+  groupProfileImageId?: string | null;
+}
+
 export class FeedCardResponseDto {
   @ApiProperty({ format: 'uuid' })
   postId: string;
@@ -53,6 +74,10 @@ export class FeedCardResponseDto {
   @ApiPropertyOptional({ format: 'uuid' })
   // 그룹 글이면 groupId, 개인 글이면 null
   groupId?: string | null;
+  @ApiPropertyOptional({
+    description: '그룹 이름 (그룹 글일 때만 제공)',
+  })
+  groupName?: string | null;
   // 카드에 보여줄 것들(프로젝트 스펙에 맞게 수정)
   @ApiProperty({ example: '부스트캠프 회식' })
   title: string;
@@ -67,6 +92,8 @@ export class FeedCardResponseDto {
     example: { lat: 37.5665, lng: 126.978, address: '서울특별시 강남구' },
   })
   location: BlockValueMap[typeof PostBlockType.LOCATION] | null;
+  @ApiPropertyOptional({ example: '18:30' })
+  time?: string | null;
   @ApiPropertyOptional({ example: ['회식', '강남'] })
   tags: string[] | null;
   @ApiPropertyOptional({ enum: PostMood, example: [PostMood.HAPPY] })
@@ -75,6 +102,17 @@ export class FeedCardResponseDto {
   rating: number | null;
   @ApiProperty({ type: () => [FeedBlockDto] })
   blocks: FeedBlockDto[];
+  @ApiProperty({ type: () => [FeedContributorDto] })
+  contributors: FeedContributorDto[];
+  @ApiProperty({
+    description: '요청자 기준 권한 정보',
+    example: 'EDITOR',
+  })
+  permission: 'ADMIN' | 'EDITOR' | 'VIEWER' | 'OWNER' | null;
+  @ApiPropertyOptional({
+    description: '해당 게시글의 공동 수정 드래프트가 열려있는지 여부',
+  })
+  hasActiveEditDraft?: boolean;
   constructor(init: FeedCardResponseDto) {
     Object.assign(this, init);
   }

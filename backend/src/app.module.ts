@@ -18,6 +18,10 @@ import { SearchModule } from './modules/search/search.module';
 import { MapModule } from './modules/map/map.module';
 import { TemplateModule } from './modules/template/template.module';
 import { MediaModule } from './modules/media/media.module';
+import { TrashModule } from './modules/trash/trash.module';
+import { AnnouncementModule } from './modules/announcement/announcement.module';
+import { InquiryModule } from './modules/inquiry/inquiry.module';
+import { NotificationModule } from './modules/notification/notification.module';
 
 @Module({
   imports: [
@@ -45,6 +49,10 @@ import { MediaModule } from './modules/media/media.module';
     MapModule,
     TemplateModule,
     MediaModule,
+    TrashModule,
+    AnnouncementModule,
+    InquiryModule,
+    NotificationModule,
   ],
   controllers: [AppController],
   providers: [AppService],

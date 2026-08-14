@@ -1,11 +1,10 @@
 import { cache } from 'react';
-import { queryOptions } from '@tanstack/react-query';
+import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query';
 import { get } from './api';
 import { RecordBlock, RecordDetailResponse } from '../types/record';
-import { RecordPreview } from '../types/recordResponse';
+import { MapListResponse, RecordPreview } from '../types/recordResponse';
 import { createApiError } from '../utils/errorHandler';
 import { PERSONAL_STALE_TIME } from '../constants/constants';
-import { resolveMediaInBlocks } from '../utils/mediaResolver';
 
 // ============================================
 // 서버 컴포넌트용 캐시된 함수 (React cache)
@@ -20,11 +19,7 @@ export const getCachedRecordDetail = cache(async (recordId: string) => {
   if (!response.success) {
     throw createApiError(response);
   }
-  const record = response.data;
-
-  record.blocks = await resolveMediaInBlocks(record.blocks);
-
-  return record;
+  return response.data;
 });
 
 /**
@@ -50,6 +45,91 @@ export const getCachedRecordPreviewList = cache(
 // 클라이언트 컴포넌트용 queryOptions (React Query)
 // ============================================
 
+export interface MapRecordListParams {
+  maxLat: number;
+  maxLng: number;
+  minLat: number;
+  minLng: number;
+  scope: 'personal' | 'group';
+  emotions?: string;
+  groupId?: string;
+  radius?: number;
+  from?: string;
+  to?: string;
+  tags?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export const mapRecordListOptions = ({
+  maxLat,
+  maxLng,
+  minLat,
+  minLng,
+  scope,
+  groupId,
+  radius,
+  from,
+  emotions,
+  to,
+  tags,
+  cursor,
+  limit,
+}: MapRecordListParams) =>
+  infiniteQueryOptions({
+    queryKey: [
+      'map',
+      'records',
+      scope,
+      ...(scope === 'group' && groupId ? [groupId] : []),
+      maxLat,
+      maxLng,
+      minLat,
+      minLng,
+      radius,
+      from,
+      to,
+      tags,
+      cursor,
+      limit,
+      emotions,
+    ],
+    queryFn: async ({ pageParam }) => {
+      const params: Record<string, string | number> = {
+        maxLat,
+        maxLng,
+        minLat,
+        minLng,
+        scope,
+      };
+
+      if (scope === 'group' && groupId) {
+        params.groupId = groupId;
+      }
+      if (radius !== undefined) params.radius = radius;
+      if (from) params.from = from;
+      if (to) params.to = to;
+      if (tags) params.tags = tags;
+      if (pageParam) params.cursor = pageParam;
+      if (limit !== undefined) params.limit = limit;
+      if (emotions) params.emotions = emotions;
+
+      const response = await get<MapListResponse>(`/api/map/posts`, params);
+
+      if (!response.success) {
+        throw createApiError(response);
+      }
+      return response.data;
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => {
+      if (!lastPage || !lastPage.hasNextPage) return undefined;
+      return lastPage.hasNextPage ? lastPage.nextCursor : undefined;
+    },
+    staleTime: PERSONAL_STALE_TIME,
+    retry: false,
+  });
+
 export const recordDetailOptions = (recordId: string) =>
   queryOptions({
     queryKey: ['record', recordId],
@@ -61,13 +141,9 @@ export const recordDetailOptions = (recordId: string) =>
       if (!response.success) {
         throw createApiError(response);
       }
-      const record = response.data;
-
-      record.blocks = await resolveMediaInBlocks(record.blocks);
-
-      return record;
+      return response.data;
     },
-    staleTime: PERSONAL_STALE_TIME,
+    staleTime: 0,
     retry: false,
   });
 
@@ -77,10 +153,13 @@ export const recordPreviewListOptions = (
   groupId?: string,
 ) =>
   queryOptions({
-    queryKey:
-      scope === 'groups'
-        ? ['group', groupId, 'records', 'daily', date]
-        : ['records', 'preview', date, 'personal'],
+    queryKey: (() => {
+      if (scope === 'groups')
+        return ['group', groupId, 'records', 'daily', date];
+      if (scope === 'personal')
+        return ['my', 'records', 'preview', date, 'personal'];
+      return ['my', 'records', 'preview', date];
+    })(),
     queryFn: async () => {
       const endpoint = !scope
         ? `/api/feed?date=${date}`

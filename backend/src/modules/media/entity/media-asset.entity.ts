@@ -18,6 +18,7 @@ export enum MediaAssetStatus {
 
 @Entity('media_assets')
 @Index(['ownerUserId'])
+@Index('IDX_media_assets_delete_requested_at', ['deleteRequestedAt'])
 @Index('uq_media_assets_storage_key_active', ['storageKey'], {
   unique: true,
   where: `"deleted_at" IS NULL`,
@@ -26,7 +27,7 @@ export class MediaAsset {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @ManyToOne(() => User, { onDelete: 'NO ACTION' }) // CASCADE 비추
+  @ManyToOne(() => User, { onDelete: 'NO ACTION' })
   @JoinColumn({ name: 'owner_user_id' })
   ownerUser: User;
 
@@ -60,8 +61,22 @@ export class MediaAsset {
 
   @Column({ type: 'int', nullable: true })
   height?: number;
+
   @Column({ name: 'uploaded_at', type: 'timestamptz', nullable: true })
   uploadedAt?: Date;
+
+  @Column({
+    name: 'delete_requested_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  deleteRequestedAt?: Date | null;
+
+  @Column({ name: 'delete_retry_count', type: 'int', default: 0 })
+  deleteRetryCount: number;
+
+  @Column({ name: 'last_delete_error', type: 'text', nullable: true })
+  lastDeleteError?: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

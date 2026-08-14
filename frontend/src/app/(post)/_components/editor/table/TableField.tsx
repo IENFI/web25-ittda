@@ -4,6 +4,35 @@ import { TableValue } from '@/lib/types/recordField';
 import { cn } from '@/lib/utils';
 import { Plus, MinusCircle, X } from 'lucide-react';
 import { useEffect, useRef } from 'react';
+import { useIMEInput } from '@/hooks/useIMEInput';
+
+interface TableCellInputProps {
+  value: string;
+  onChange: (val: string) => void;
+  disabled?: boolean;
+  onFocus?: () => void;
+  onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
+  inputRef?: React.Ref<HTMLInputElement>;
+  placeholder?: string;
+  className?: string;
+}
+
+function TableCellInput({ value, onChange, disabled, onFocus, onBlur, inputRef, placeholder, className }: TableCellInputProps) {
+  const imeProps = useIMEInput(onChange);
+  return (
+    <input
+      ref={inputRef}
+      type="text"
+      value={value}
+      {...imeProps}
+      disabled={disabled}
+      onFocus={onFocus}
+      onBlur={onBlur}
+      placeholder={placeholder}
+      className={className}
+    />
+  );
+}
 
 interface TableFieldProps {
   data: TableValue | null;
@@ -12,7 +41,11 @@ interface TableFieldProps {
   isMyLock?: boolean;
   onFocus?: () => void;
   onBlur?: (finalValue: TableValue) => void;
+  onLockedClick?: () => void;
 }
+
+const MAX_ROWS = 4;
+const MAX_COLS = 4;
 
 export const TableField = ({
   data,
@@ -21,6 +54,7 @@ export const TableField = ({
   isMyLock,
   onFocus,
   onBlur,
+  onLockedClick,
 }: TableFieldProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const firstInputRef = useRef<HTMLInputElement>(null);
@@ -78,6 +112,8 @@ export const TableField = ({
   };
 
   const addRow = () => {
+    if (!canAddRow) return;
+
     const newRow = new Array(colCount).fill('');
     onUpdate({
       rows: rowCount + 1,
@@ -87,6 +123,7 @@ export const TableField = ({
   };
 
   const addColumn = () => {
+    if (!canAddColumn) return;
     onUpdate({
       rows: rowCount,
       cols: colCount + 1,
@@ -122,14 +159,27 @@ export const TableField = ({
     onUpdate(null);
   };
 
+  const canAddRow = rowCount < MAX_ROWS;
+  const canAddColumn = colCount < MAX_COLS;
+
   return (
     <div
       ref={containerRef}
       className={cn(
-        'group/table relative w-full transition-opacity',
-        isLocked && 'opacity-60 pointer-events-none',
+        'group/table relative w-full transition-opacity relative',
+        isLocked && 'opacity-60',
       )}
     >
+      {isLocked && (
+        <div
+          onClick={(e) => {
+            e.stopPropagation(); // 부모로 이벤트 전달 방지
+            onLockedClick?.();
+          }}
+          className="absolute inset-0 z-10"
+          // 이 div가 위에 붕 떠서 모든 클릭을 다 뺏어옵니다.
+        />
+      )}
       <div className="flex items-stretch gap-2">
         <div className="flex-1 min-w-0 relative overflow-x-auto hide-scrollbar rounded-xl border border-gray-100 dark:border-white/5 bg-gray-50/30 dark:bg-white/[0.02] shadow-sm mb-2">
           <table className="w-full border-collapse">
@@ -160,18 +210,17 @@ export const TableField = ({
                   {row.map((cell, cIdx) => (
                     <td
                       key={cIdx}
-                      className="p-0 border-r border-gray-100/50 dark:border-white/5 last:border-none"
+                      className="p-0 border-r border-gray-100/50 dark:border-white/5 last:border-none overflow-hidden"
                     >
-                      <input
-                        ref={rIdx === 0 && cIdx === 0 ? firstInputRef : null}
-                        type="text"
+                      <TableCellInput
+                        inputRef={rIdx === 0 && cIdx === 0 ? firstInputRef : null}
                         value={cell}
-                        onChange={(e) => updateCell(rIdx, cIdx, e.target.value)}
+                        onChange={(val) => updateCell(rIdx, cIdx, val)}
                         disabled={isLocked && !isMyLock}
                         onFocus={handleFocusWrapper}
                         onBlur={handleBlurWrapper}
                         placeholder={rIdx === 0 ? '항목명' : '내용'}
-                        className={`w-full p-2.5 text-xs outline-none dark:focus:bg-white/5 transition-colors ${
+                        className={`table-cell-input p-2.5 outline-none dark:focus:bg-white/5 transition-colors ${
                           rIdx === 0
                             ? 'font-bold text-itta-black dark:text-white bg-gray-100 dark:bg-white/10'
                             : 'font-medium text-itta-gray3 bg-transparent '
@@ -183,7 +232,7 @@ export const TableField = ({
                     <button
                       disabled={isLocked}
                       onClick={() => removeRow(rIdx)}
-                      className="flex m-auto text-gray-300 hover:text-rose-500 transition-colors opacity-0 group-hover/row:opacity-100 active:scale-90"
+                      className="flex m-auto text-gray-300 hover:text-rose-500 transition-colors active:scale-90"
                     >
                       <MinusCircle size={12} />
                     </button>
@@ -193,26 +242,31 @@ export const TableField = ({
             </tbody>
           </table>
         </div>
-
-        <button
-          title="열 추가"
-          disabled={isLocked}
-          onClick={addColumn}
-          className="shrink-0 mb-2 flex items-center p-2 rounded-lg border border-dashed border-itta-gray2 dark:border-white/10 text-xs font-bold text-gray-400 hover:text-itta-point hover:border-itta-point transition-all active:scale-95 bg-white dark:bg-transparent"
-        >
-          <Plus size={10} />
-        </button>
+        {canAddColumn && (
+          <button
+            title="열 추가"
+            disabled={isLocked}
+            onClick={addColumn}
+            className="shrink-0 mb-2 flex items-center p-2 rounded-lg border border-dashed border-itta-gray2 dark:border-white/10 text-xs font-bold text-gray-400 hover:text-itta-point hover:border-itta-point transition-all active:scale-95 bg-white dark:bg-transparent"
+          >
+            <Plus size={10} />
+          </button>
+        )}
       </div>
 
       <div className="flex items-start gap-2 ">
-        <button
-          disabled={isLocked}
-          title="행 추가"
-          onClick={addRow}
-          className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-dashed border-gray-200 dark:border-white/10 text-[11px] font-bold text-gray-400 hover:text-itta-point hover:border-itta-point transition-all active:scale-95"
-        >
-          <Plus size={10} /> 행 추가
-        </button>
+        <div className="flex-1">
+          {canAddRow && (
+            <button
+              disabled={isLocked}
+              title="행 추가"
+              onClick={addRow}
+              className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-dashed border-gray-200 dark:border-white/10 text-[11px] font-bold text-gray-400 hover:text-itta-point hover:border-itta-point transition-all active:scale-95"
+            >
+              <Plus size={10} /> 행 추가
+            </button>
+          )}
+        </div>
         <button
           onClick={removeTable}
           className="p-1.5 text-gray-400 hover:text-rose-500 transition-all active:scale-90"

@@ -4,7 +4,10 @@ import {
   QueryClient,
 } from '@tanstack/react-query';
 import SharedRecords from './_components/SharedRecords';
-import { getCachedGroupList } from '@/lib/api/group';
+import SharedRecordsSkeleton from './_components/SharedRecordsSkeleton';
+import ErrorHandlingWrapper from '@/components/ErrorHandlingWrapper';
+import ErrorFallback from '@/components/ErrorFallback';
+import { groupListOptions } from '@/lib/api/group';
 
 interface SharedPageProps {
   searchParams: Promise<{ [key: string]: string }>;
@@ -15,17 +18,17 @@ export default async function SharedPage({ searchParams }: SharedPageProps) {
   const params = await searchParams;
   const sortBy = params.sort;
 
-  if (process.env.NEXT_PUBLIC_MOCK !== 'true') {
-    const groupList = await getCachedGroupList();
-
-    // QueryClient에 직접 넣어서 HydrationBoundary로 클라이언트에 전달
-    queryClient.setQueryData(['shared'], groupList);
-  }
+  await queryClient.prefetchQuery(groupListOptions());
 
   return (
     <div className="w-full flex flex-col gap-6">
       <HydrationBoundary state={dehydrate(queryClient)}>
-        <SharedRecords searchParams={sortBy} />
+        <ErrorHandlingWrapper
+          fallbackComponent={ErrorFallback}
+          suspenseFallback={<SharedRecordsSkeleton />}
+        >
+          <SharedRecords searchParams={sortBy} />
+        </ErrorHandlingWrapper>
       </HydrationBoundary>
     </div>
   );

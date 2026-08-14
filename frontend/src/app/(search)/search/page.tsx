@@ -1,11 +1,11 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { useIMEInput } from '@/hooks/useIMEInput';
 import { useRouter } from 'next/navigation';
-import { Search, X } from 'lucide-react';
+import { Search, X, Loader2, Clock } from 'lucide-react';
 import { FilterChip } from '@/components/search/FilterChip';
 import SearchItem from '../_components/SearchItem';
-import { RecordSearchItem } from '@/lib/types/record';
 import { useDebounce } from '@/lib/utils/useDebounce';
 import {
   makeDateLabel,
@@ -16,48 +16,18 @@ import {
 import { useSearchFilters } from '@/hooks/useSearchFilters';
 import { FilterDrawerRenderer } from '@/components/search/FilterDrawerRender';
 import Back from '@/components/Back';
-
-const dummyRecords: RecordSearchItem[] = [
-  {
-    id: '1',
-    title: '성수동 팝업 스토어 나들이',
-    address: '성수동 카페거리',
-    date: '2025.12.21',
-    content:
-      '드디어 가보고 싶었던 성수동 팝업 스토어 방문! 웨이팅은 길었지만 굿즈들이 너무 귀여웠다.',
-    imageUrl:
-      'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?q=80&w=400',
-    tags: ['성수동', '일상', '맛집'],
-  },
-  {
-    id: '2',
-    title: '주말 아침 러닝 기록',
-    address: '뚝섬한강공원',
-    date: '2025.12.20',
-    content:
-      '날씨가 꽤 추워졌지만 달리고 나니 상쾌하다. 한강 공원 코스는 언제나 좋다.',
-    imageUrl:
-      'https://images.unsplash.com/photo-1476480862126-209bfaa8edc8?q=80&w=400',
-    tags: ['운동', '일상'],
-  },
-  {
-    id: '3',
-    title: '가족과 함께한 제주도 여행',
-    address: '제주 함덕 해변',
-    date: '2025.11.15',
-    content:
-      '오랜만에 가족들과 제주도 여행. 에메랄드빛 바다와 맛있는 흑돼지 구이.',
-    imageUrl:
-      'https://images.unsplash.com/photo-1506477331477-33d6d8b3dc85?q=80&w=400',
-    tags: ['여행', '가족', '맛집'],
-  },
-];
+import { useRecentSearches, useSearchQuery } from '@/hooks/useSearchQuery';
+import { useQueryClient } from '@tanstack/react-query';
 
 export default function SearchPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
+
   const [activeDrawer, setActiveDrawer] = useState<
     'tag' | 'date' | 'location' | 'emotion' | null
   >(null);
+  const { data: recentSearchesData } = useRecentSearches();
+  const recentKeywords = recentSearchesData?.keywords ?? [];
 
   const {
     query,
@@ -68,91 +38,112 @@ export default function SearchPage() {
     location,
     updateUrl,
   } = useSearchFilters({ withLocation: true });
+  const isInitialState =
+    !query &&
+    selectedTags.length === 0 &&
+    !startDate &&
+    !location &&
+    selectedEmotions.length === 0;
+
   const locationAddress = location?.address ?? null;
-
   const [localQuery, setLocalQuery] = useState(query);
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } =
+    useSearchQuery(
+      {
+        query,
+        tags: selectedTags,
+        emotions: selectedEmotions,
+        start: startDate,
+        end: endDate,
+        location,
+      },
+      !activeDrawer && !isInitialState,
+    );
+  const { debounced: debouncedUpdateQuery, cancel } = useDebounce(
+    (val: string) => {
+      updateUrl({ q: val });
+    },
+    1_000,
+  );
 
-  // 이후에는 백엔드 로직으로 대체될 부분으로
-  // 프론트에서 임시로 필터링 처리함(보여주기위한 용도)
-  const filteredResults = useMemo(() => {
-    let results = [...dummyRecords];
+  // 데이터 평탄화
+  const items = useMemo(
+    () => data?.pages.flatMap((page) => page.items) ?? [],
+    [data],
+  );
+  const totalCount = data?.pages[0]?.count ?? 0;
 
-    // 검색어 필터링
-    if (query.trim()) {
-      const lowerQuery = query.toLowerCase();
-      results = results.filter(
-        (r) =>
-          r.title.toLowerCase().includes(lowerQuery) ||
-          r.content.toLowerCase().includes(lowerQuery),
+  //  무한 스크롤 관찰자
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const lastItemRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (isFetchingNextPage) return;
+      if (observerRef.current) observerRef.current.disconnect();
+
+      observerRef.current = new IntersectionObserver(
+        (entries) => {
+          if (entries[0].isIntersecting && hasNextPage) {
+            fetchNextPage();
+          }
+        },
+        { rootMargin: '200px' },
       );
+
+      if (node) observerRef.current.observe(node);
+    },
+    [isFetchingNextPage, hasNextPage, fetchNextPage],
+  );
+
+  const handleQueryChange = (val: string) => {
+    setLocalQuery(val);
+    if (val === '') {
+      cancel();
+      updateUrl({ q: null });
+      queryClient.invalidateQueries({ queryKey: ['search', 'recent'] });
+      return;
     }
 
-    // 태그 필터링
-    if (selectedTags.length > 0) {
-      results = results.filter((r) =>
-        selectedTags.some((tag) => r.tags?.includes(tag)),
-      );
-    }
+    debouncedUpdateQuery(val);
+  };
+  const queryImeProps = useIMEInput(handleQueryChange);
 
-    // 날짜 필터링
-    if (startDate) {
-      results = results.filter((r) => {
-        if (!endDate) return r.date === startDate;
-        return r.date >= startDate && r.date <= endDate;
-      });
-    }
-
-    // 위치 필터링 (더미데이터에는 좌표가 없으므로 주소 텍스트 포함 여부로 예시)
-    if (locationAddress) {
-      results = results.filter((r) => r.address.includes(locationAddress));
-    }
-
-    return results;
-  }, [query, selectedTags, startDate, endDate, locationAddress]);
-
-  const debouncedUpdateQuery = useDebounce((val: string) => {
+  // 키워드 클릭 핸들러
+  const handleKeywordClick = (val: string) => {
+    setLocalQuery(val); // input 필드 업데이트
     updateUrl({ q: val });
-  }, 500);
-
-  const handleQueryChange = (query: string) => {
-    setLocalQuery(query);
-    debouncedUpdateQuery(query);
   };
-
-  const handleLocationChipClick = () => {
-    // 현재 파라미터 가져와서 같이 넘겨주도록
-    const currentParams = new URLSearchParams(window.location.search);
-    currentParams.set('from', 'search');
-
-    router.push(`/location-picker?${currentParams.toString()}`);
-  };
-
   return (
-    <div className="min-h-screen bg-white dark:bg-[#121212]">
-      <header className="sticky top-0 z-20 bg-white/90 dark:bg-[#121212]/90 backdrop-blur-md p-4 space-y-4">
-        <div className="flex items-center gap-3">
-          <Back />
-          <div className="flex-1 relative">
+    <div className="w-full flex flex-col h-full bg-white dark:bg-[#121212]">
+      <header
+        style={{ marginTop: 'calc(env(safe-area-inset-top))' }}
+        className="fixed top-0 left-0 right-0 max-w-4xl mx-auto z-20 bg-white/90 dark:bg-[#121212]/90 backdrop-blur-md p-3 sm:p-4 space-y-3 sm:space-y-4"
+      >
+        {/* 검색바 영역 */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          <Back fallback="/" />
+          <div className="flex-1 relative overflow-hidden">
             <input
               type="text"
               placeholder="제목이나 내용으로 검색"
               value={localQuery}
-              onChange={(e) => handleQueryChange(e.target.value)}
-              className="w-full rounded-lg px-11 py-3 bg-gray-50 dark:bg-white/5 text-sm outline-none dark:text-white"
+              {...queryImeProps}
+              className="w-full rounded-lg px-9 sm:px-11 py-2.5 sm:py-3 bg-gray-50 dark:bg-white/5 mobile-input outline-none dark:text-white"
             />
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-3 sm:left-4 top-1/2 -translate-y-1/2 w-3.5 sm:w-4 h-3.5 sm:h-4 text-gray-400" />
             {localQuery && (
               <button
                 onClick={() => handleQueryChange('')}
-                className="absolute right-4 top-1/2 -translate-y-1/2 p-1"
+                className="absolute right-3 sm:right-4 top-1/2 -translate-y-1/2 p-1"
               >
-                <X size={16} className="text-gray-400" />
+                <X size={14} className="text-gray-400 sm:hidden" />
+                <X size={16} className="text-gray-400 hidden sm:block" />
               </button>
             )}
           </div>
         </div>
 
-        <div className="flex gap-2 overflow-x-auto hide-scrollbar px-1">
+        {/* 필터 칩 영역 */}
+        <div className="flex gap-1.5 sm:gap-2 overflow-x-auto scrollbar-hide px-1">
           <FilterChip
             type="tag"
             label={makeTagLabel(selectedTags)}
@@ -165,7 +156,7 @@ export default function SearchPage() {
             label={makeEmotionLabel(selectedEmotions)}
             isActive={selectedEmotions.length > 0}
             onClick={() => setActiveDrawer('emotion')}
-            onClear={() => updateUrl({ emotion: null })}
+            onClear={() => updateUrl({ emotions: null })}
           />
           <FilterChip
             type="date"
@@ -178,55 +169,114 @@ export default function SearchPage() {
             type="location"
             label={makeLocationLabel(locationAddress)}
             isActive={!!locationAddress}
-            onClick={handleLocationChipClick}
+            onClick={() =>
+              router.push(
+                `/location-picker?from=search&${new URLSearchParams(window.location.search)}`,
+              )
+            }
             onClear={() =>
               updateUrl({ lat: null, lng: null, address: null, radius: null })
             }
           />
         </div>
       </header>
-
-      <main className="p-6">
-        <h3 className="text-md font-bold text-itta-gray3 uppercase tracking-tight mb-4">
-          검색 결과{' '}
-          <span className="text-itta-point">{filteredResults.length}</span>
-        </h3>
-
-        {filteredResults.length > 0 ? (
-          <div className="space-y-3">
-            {filteredResults.map((record) => (
-              <SearchItem
-                key={record.id}
-                record={record}
-                onClick={(id) => router.push(`/post/${id}`)}
-              />
-            ))}
-          </div>
+      <div
+        style={{
+          marginTop: 'max(calc(env(safe-area-inset-top) + 54px), 120px)',
+        }}
+        className="overflow-y-auto"
+      >
+        {isInitialState ? (
+          <section className="space-y-3 sm:space-y-4 px-4 sm:px-6 py-2 sm:py-3">
+            <div className="flex items-center gap-1.5 sm:gap-2 text-itta-gray3 font-bold text-xs sm:text-sm">
+              <Clock size={14} className="sm:hidden" />
+              <Clock size={16} className="hidden sm:block" />
+              <span>최근 검색어</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5 sm:gap-2">
+              {recentKeywords.length > 0 ? (
+                recentKeywords.map((kw, i) => (
+                  <button
+                    key={i}
+                    onClick={() => handleKeywordClick(kw)}
+                    className="px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-50 dark:bg-white/5 rounded-full text-[11px] sm:text-xs font-medium text-gray-600 dark:text-gray-300 active:scale-95 transition-all"
+                  >
+                    {kw}
+                  </button>
+                ))
+              ) : (
+                <p className="text-[11px] sm:text-xs text-gray-400">
+                  최근 검색 기록이 없습니다.
+                </p>
+              )}
+            </div>
+          </section>
         ) : (
-          <div className="py-32 flex flex-col items-center text-center space-y-4 animate-in fade-in duration-500">
-            <div className="w-16 h-16 rounded-full bg-gray-50 dark:bg-white/5 flex items-center justify-center">
-              <Search className="w-8 h-8 text-gray-200" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-sm font-bold text-itta-gray3">
-                찾으시는 기록이 없어요
-              </p>
-              <p className="text-xs text-itta-gray2">
-                필터를 변경하거나 다른 단어로 검색해보세요.
-              </p>
-            </div>
-          </div>
-        )}
-      </main>
+          <main className="p-4 sm:p-6 pb-16 sm:pb-20">
+            <h3 className="text-sm sm:text-md font-bold text-itta-gray3 uppercase tracking-tight mb-3 sm:mb-4">
+              검색 결과 <span className="text-itta-point">{totalCount}</span>
+            </h3>
 
-      <FilterDrawerRenderer
-        activeDrawer={activeDrawer}
-        close={() => setActiveDrawer(null)}
-        tags={selectedTags}
-        emotions={selectedEmotions}
-        dateRange={{ start: startDate, end: endDate }}
-        onUpdateUrl={updateUrl}
-      />
+            {isLoading ? (
+              <div className="py-16 sm:py-20 flex justify-center">
+                <Loader2 className="animate-spin w-6 sm:w-8 h-6 sm:h-8 text-itta-point" />
+              </div>
+            ) : items.length > 0 ? (
+              <div className="space-y-3 sm:space-y-4">
+                {items.map((record, idx) => {
+                  const isLastItem = idx === items.length - 1;
+                  return (
+                    <div key={record.id} ref={isLastItem ? lastItemRef : null}>
+                      <SearchItem
+                        record={{
+                          id: record.id,
+                          title: record.title,
+                          address: record.location?.address || '',
+                          date: record.eventAt,
+                          content: record.snippet,
+                          previewMediaIds: record.previewMediaIds || [],
+                          snippet: record.snippet || '',
+                        }}
+                        onClick={(id) => router.push(`/record/${id}`)}
+                        priorityLoad={idx === 0}
+                      />
+                    </div>
+                  );
+                })}
+
+                {/* 다음 페이지 로딩 중 표시 */}
+                {isFetchingNextPage && (
+                  <div className="flex justify-center py-4 sm:py-6">
+                    <Loader2 className="animate-spin w-5 sm:w-6 h-5 sm:h-6 text-itta-point" />
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* 검색 결과 없음 UI */
+              <div className="py-20 sm:py-32 flex flex-col items-center text-center space-y-3 sm:space-y-4">
+                <Search className="w-10 sm:w-12 h-10 sm:h-12 text-gray-200" />
+                <div className="space-y-0.5 sm:space-y-1">
+                  <p className="text-xs sm:text-sm font-bold text-itta-gray3">
+                    찾으시는 기록이 없어요
+                  </p>
+                  <p className="text-[11px] sm:text-xs text-itta-gray2">
+                    필터를 변경하거나 다른 단어로 검색해보세요.
+                  </p>
+                </div>
+              </div>
+            )}
+          </main>
+        )}
+
+        <FilterDrawerRenderer
+          activeDrawer={activeDrawer}
+          close={() => setActiveDrawer(null)}
+          tags={selectedTags}
+          emotions={selectedEmotions}
+          dateRange={{ start: startDate, end: endDate }}
+          onUpdateUrl={updateUrl}
+        />
+      </div>
     </div>
   );
 }
