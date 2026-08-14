@@ -69,7 +69,7 @@ jobs:
           docker run --rm \
             -e RAILWAY_TOKEN \
             ghcr.io/railwayapp/cli:4.58.0 \
-            redeploy \
+            railway redeploy \
             --service "$RAILWAY_SERVICE_ID" \
             --from-source \
             --yes
