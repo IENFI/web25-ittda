@@ -1,6 +1,9 @@
-import { dehydrate, HydrationBoundary, QueryClient } from '@tanstack/react-query';
-import { recordPreviewListOptions } from '@/lib/api/records';
-import { formatDateISO } from '@/lib/date';
+import {
+  dehydrate,
+  HydrationBoundary,
+  QueryClient,
+} from '@tanstack/react-query';
+import { pastFeedInfiniteOptions } from '@/lib/api/records';
 import { Suspense } from 'react';
 import GroupMainTabs from './_components/GroupMainTabs';
 import Coachmark from '@/components/Coachmark';
@@ -12,13 +15,10 @@ interface GroupPageProps {
 
 export default async function GroupPage({ params }: GroupPageProps) {
   const { groupId } = await params;
-  const today = formatDateISO();
   const queryClient = new QueryClient();
 
   if (process.env.NEXT_PUBLIC_MOCK !== 'true') {
-    await queryClient.prefetchQuery(
-      recordPreviewListOptions(today, 'groups', groupId),
-    );
+    await queryClient.prefetchInfiniteQuery(pastFeedInfiniteOptions(groupId));
   }
 
   return (

@@ -33,6 +33,55 @@ type BuildFeedCardsOptions = {
   draftRepo?: Repository<PostDraft>;
 };
 
+export interface DecodedFeedCursor {
+  eventAt: Date;
+  id: string;
+}
+
+// 지난 기록 무한스크롤용 커서: 마지막 항목의 eventAt + id를 base64로 인코딩.
+// 정렬이 eventAt DESC, id DESC 복합 정렬이라, eventAt만으로 자르면 같은
+// eventAt을 가진 게시글들 사이 경계에서 커서 뒤쪽 항목이 통째로 스킵될 수 있다
+// (eventAt < cursor 조건이 "같은 eventAt이지만 아직 안 보낸" 항목까지 걸러버림).
+// id까지 커서에 담아 정렬 기준과 동일한 튜플 비교로 잘라야 안전하다.
+export function encodeFeedCursor(eventAt: Date, id: string): string {
+  return Buffer.from(
+    JSON.stringify({ eventAt: eventAt.toISOString(), id }),
+    'utf-8',
+  ).toString('base64');
+}
+
+export function decodeFeedCursor(
+  cursor?: string | null,
+): DecodedFeedCursor | null {
+  if (!cursor) return null;
+
+  let parsed: unknown;
+  try {
+    const decoded = Buffer.from(cursor, 'base64').toString('utf-8');
+    parsed = JSON.parse(decoded);
+  } catch {
+    throw new BadRequestException('Invalid feed cursor.');
+  }
+
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    typeof (parsed as Record<string, unknown>).eventAt !== 'string' ||
+    typeof (parsed as Record<string, unknown>).id !== 'string'
+  ) {
+    throw new BadRequestException('Invalid feed cursor.');
+  }
+
+  const { eventAt, id } = parsed as { eventAt: string; id: string };
+  const date = new Date(eventAt);
+  if (Number.isNaN(date.getTime())) {
+    throw new BadRequestException('Invalid feed cursor.');
+  }
+
+  return { eventAt: date, id };
+}
+
 export function dayRange(day: string, tz: string): DayRange {
   const dateOnly = DateTime.fromISO(day, { zone: 'UTC' });
   if (!dateOnly.isValid) throw new BadRequestException('Invalid date');
