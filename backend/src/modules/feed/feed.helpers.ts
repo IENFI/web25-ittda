@@ -1,11 +1,12 @@
 // src/modules/feed/feed.helpers.ts
 import { BadRequestException, Logger } from '@nestjs/common';
-import { In, LessThanOrEqual, Repository } from 'typeorm';
+import { In, IsNull, LessThanOrEqual, Repository } from 'typeorm';
 import { DateTime } from 'luxon';
 
 import { PostBlock } from '../post/entity/post-block.entity';
 import { PostContributor } from '../post/entity/post-contributor.entity';
 import { PostDraft } from '../post/entity/post-draft.entity';
+import { PostGroupShare } from '../post/entity/post-group-share.entity';
 import { GroupMember } from '../group/entity/group_member.entity';
 import { Group } from '../group/entity/group.entity';
 import { PostBlockType } from '@/enums/post-block-type.enum';
@@ -27,10 +28,20 @@ type FeedWarning = {
     title: string;
   };
 };
+type SharedContext = {
+  groupId: string;
+  groupName: string | null;
+  sharedPostIds: Set<string>;
+};
 type BuildFeedCardsOptions = {
   includeGroupName?: boolean;
   groupRepo?: Repository<Group>;
   draftRepo?: Repository<PostDraft>;
+  // 그룹 피드에서 "이 그룹에 공유된 개인 글"의 표시용 groupId/groupName/scope를
+  // 오버라이드하기 위한 컨텍스트. permission/hasActiveEditDraft는 계속 원본
+  // p.groupId(=null) 기준으로 계산되게 둬서 그룹원에게 편집 권한이 새지 않게 한다.
+  sharedContext?: SharedContext;
+  sharedGroupsByPostId?: Map<string, { groupId: string; groupName: string }[]>;
 };
 
 export interface DecodedFeedCursor {
@@ -82,6 +93,26 @@ export function decodeFeedCursor(
   return { eventAt: date, id };
 }
 
+export async function getSharedGroupsByPostIds(
+  postGroupShareRepo: Repository<PostGroupShare>,
+  postIds: string[],
+): Promise<Map<string, { groupId: string; groupName: string }[]>> {
+  const map = new Map<string, { groupId: string; groupName: string }[]>();
+  if (postIds.length === 0) return map;
+
+  const shares = await postGroupShareRepo.find({
+    where: { postId: In(postIds), deletedAt: IsNull() },
+    relations: ['group'],
+    order: { createdAt: 'DESC' },
+  });
+  shares.forEach((share) => {
+    const list = map.get(share.postId) ?? [];
+    list.push({ groupId: share.groupId, groupName: share.group.name });
+    map.set(share.postId, list);
+  });
+  return map;
+}
+
 export function dayRange(day: string, tz: string): DayRange {
   const dateOnly = DateTime.fromISO(day, { zone: 'UTC' });
   if (!dateOnly.isValid) throw new BadRequestException('Invalid date');
@@ -105,7 +136,13 @@ export async function buildFeedCards(
   userId?: string,
   options: BuildFeedCardsOptions = {},
 ): Promise<{ cards: FeedCardResponseDto[]; warnings: FeedWarning[] }> {
-  const { includeGroupName = false, groupRepo, draftRepo } = options;
+  const {
+    includeGroupName = false,
+    groupRepo,
+    draftRepo,
+    sharedContext,
+    sharedGroupsByPostId,
+  } = options;
   const requesterId = userId ?? '';
   const postIds = posts.map((p) => p.id);
   const postById = new Map(posts.map((p) => [p.id, p]));
@@ -233,11 +270,21 @@ export async function buildFeedCards(
       (c): c is PostContributor & { user: { id: string } } => Boolean(c.user),
     );
 
+    // 공유된 개인 글은 post.groupId가 항상 null이라, 대신 공유 대상 그룹을
+    // 기여자의 닉네임/프로필 조회 기준으로 쓴다 (표시 중인 그룹 컨텍스트 기준).
+    const contributorGroupId = (postId: string): string | null => {
+      const post = postById.get(postId);
+      if (post?.groupId) return post.groupId;
+      if (sharedContext?.sharedPostIds.has(postId))
+        return sharedContext.groupId;
+      return null;
+    };
+
     const groupPairs: Array<{ groupId: string; userId: string }> = [];
     activeContributors.forEach((c) => {
-      const post = postById.get(c.postId);
-      if (post?.groupId) {
-        groupPairs.push({ groupId: post.groupId, userId: c.userId });
+      const groupId = contributorGroupId(c.postId);
+      if (groupId) {
+        groupPairs.push({ groupId, userId: c.userId });
       }
     });
 
@@ -260,8 +307,8 @@ export async function buildFeedCards(
     }
 
     activeContributors.forEach((c) => {
-      const post = postById.get(c.postId);
-      const groupKey = post?.groupId ? `${post.groupId}:${c.userId}` : null;
+      const groupId = contributorGroupId(c.postId);
+      const groupKey = groupId ? `${groupId}:${c.userId}` : null;
       const groupMember = groupKey ? groupMemberMap.get(groupKey) : undefined;
 
       const dto: FeedContributorDto = {
@@ -297,7 +344,17 @@ export async function buildFeedCards(
   for (const p of posts) {
     const loc = locationByPostId.get(p.id) ?? null;
     const time = timeByPostId.get(p.id) ?? null;
-    const scope = p.groupId ? 'GROUP' : 'ME';
+    const isSharedCard = Boolean(sharedContext?.sharedPostIds.has(p.id));
+    const ownSharedGroups = sharedGroupsByPostId?.get(p.id);
+    const effectiveGroupId = isSharedCard
+      ? sharedContext!.groupId
+      : (p.groupId ?? null);
+    const effectiveGroupName = isSharedCard
+      ? sharedContext!.groupName
+      : p.groupId
+        ? (groupNameByGroupId.get(p.groupId) ?? null)
+        : null;
+    const scope = effectiveGroupId ? 'GROUP' : 'ME';
     if (!p.eventAt) {
       logger.warn(`eventAt is missing for postId=${p.id} title=${p.title}`);
       addWarning({
@@ -322,10 +379,10 @@ export async function buildFeedCards(
       new FeedCardResponseDto({
         postId: p.id,
         scope,
-        groupId: p.groupId ?? null,
-        groupName: p.groupId
-          ? (groupNameByGroupId.get(p.groupId) ?? null)
-          : null,
+        groupId: effectiveGroupId,
+        groupName: effectiveGroupName,
+        isSharedPost: isSharedCard || Boolean(ownSharedGroups?.length),
+        sharedGroups: ownSharedGroups,
         eventAt: new Date(p.eventAt),
         createdAt: new Date(p.createdAt),
         updatedAt: new Date(p.updatedAt),

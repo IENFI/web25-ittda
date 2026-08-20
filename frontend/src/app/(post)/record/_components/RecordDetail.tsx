@@ -8,6 +8,7 @@ import Back from '@/components/Back';
 import BlockContent from '@/components/BlockContent';
 import { cn } from '@/lib/utils';
 import AssetImage from '@/components/AssetImage';
+import RecordScopeBadges from '@/components/RecordScopeBadges';
 
 // SSR에서 렌더링하지 않음: Radix Popover의 useId가 서버-클라이언트 간 렌더 트리 순서 차이로
 // aria-controls 불일치(하이드레이션 에러)를 일으키기 때문.
@@ -27,10 +28,13 @@ const RecordDetailHeaderActions = dynamic(
 
 interface RecordDetailProps {
   recordId: string;
+  groupId?: string;
 }
 
-export default function RecordDetail({ recordId }: RecordDetailProps) {
-  const { data: record } = useSuspenseQuery(recordDetailOptions(recordId));
+export default function RecordDetail({ recordId, groupId }: RecordDetailProps) {
+  const { data: record } = useSuspenseQuery(
+    recordDetailOptions(recordId, groupId),
+  );
 
   // 블록을 row별로 그룹화
   const rowMap = new Map<number, Block[]>();
@@ -50,6 +54,14 @@ export default function RecordDetail({ recordId }: RecordDetailProps) {
     .flatMap(([, blocks]) => blocks)
     .find((b) => b.type === 'IMAGE')?.id;
 
+  const viewedSharedGroup =
+    groupId && record.scope === 'PERSONAL'
+      ? record.sharedGroups?.find((group) => group.groupId === groupId)
+      : undefined;
+  const isGroup = record.scope === 'GROUP' || Boolean(viewedSharedGroup);
+  const displayGroupName =
+    record.scope === 'GROUP' ? record.groupName : viewedSharedGroup?.groupName;
+
   return (
     <div className="flex flex-col flex-1 -mt-6 transition-colors duration-300 dark:bg-[#121212] bg-[#FDFDFD]">
       <header className="-mx-4 sm:-mx-6 sticky top-0 z-50 backdrop-blur-md px-2 sm:px-4 py-2 sm:p-6 flex items-center justify-between transition-colors duration-300 dark:bg-[#121212]/90 bg-white/90">
@@ -61,6 +73,14 @@ export default function RecordDetail({ recordId }: RecordDetailProps) {
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100">
             {record.title}
           </h1>
+          <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 mt-1.5">
+            <RecordScopeBadges
+              isGroup={isGroup}
+              groupName={displayGroupName}
+              isSharedPost={record.isSharedPost}
+              sharedGroups={record.sharedGroups}
+            />
+          </div>
           {record.hasActiveEditDraft && (
             <p className="mt-1 text-xs font-medium text-gray-400 dark:text-gray-500">
               공동 수정 중...
@@ -140,9 +160,9 @@ export default function RecordDetail({ recordId }: RecordDetailProps) {
                     className="w-full h-full object-cover rounded-full"
                     wrapperClassName="w-full h-full"
                     assetId={
-                      record.groupId
-                        ? contributor.groupProfileImageId || '/profile_base.png'
-                        : contributor.profileImageId || '/profile_base.png'
+                      contributor.groupProfileImageId ||
+                      contributor.profileImageId ||
+                      '/profile_base.png'
                     }
                     alt={`${contributor.groupNickname || contributor.nickname || 'anonymous'}의 프로필`}
                   />

@@ -5,8 +5,10 @@ import {
   Get,
   HttpCode,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post as HttpPost,
+  Query,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
@@ -17,6 +19,7 @@ import {
   ApiNoContentResponse,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
 import { PostService } from './post.service';
@@ -55,17 +58,25 @@ export class PostController {
       '특정 ID의 게시글 상세 정보를 조회합니다. 조회 권한이 필요합니다.',
   })
   @ApiParam({ name: 'id', description: '게시글 ID' })
+  @ApiQuery({
+    name: 'groupId',
+    required: false,
+    description:
+      '공유된 개인 글을 특정 그룹 컨텍스트에서 볼 때, 그 그룹 기준 기여자 닉네임/프로필을 표시하기 위한 그룹 ID.',
+  })
   @ApiWrappedOkResponse({ type: PostDetailDto })
   async getOne(
     @User() user: MyJwtPayload,
     @Param('id') id: string,
+    @Query('groupId', new ParseUUIDPipe({ version: '4', optional: true }))
+    groupId?: string,
   ): Promise<PostDetailDto> {
     const requesterId = user?.sub;
     if (!requesterId) {
       throw new UnauthorizedException('Access token is required.');
     }
     await this.postService.ensureCanViewPost(id, requesterId);
-    return this.postService.findOne(id, requesterId);
+    return this.postService.findOne(id, requesterId, groupId);
   }
 
   @Get(':postId/edit')

@@ -36,6 +36,8 @@ export class PostDetailDto {
   @ApiPropertyOptional({ format: 'uuid' })
   @IsUUID()
   groupId?: string | null;
+  @ApiPropertyOptional({ description: '그룹 이름 (그룹 글일 때만 제공)' })
+  groupName?: string | null;
   @ApiProperty()
   title: string;
   @ApiProperty()
@@ -61,4 +63,23 @@ export class PostDetailDto {
     format: 'uuid',
   })
   shareToken?: string | null;
+
+  @ApiPropertyOptional({
+    description: '개인 글이 하나 이상의 그룹에 공유되어 있는지 여부',
+  })
+  isSharedPost?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      '공유된 그룹 목록 (원작성자가 조회할 때만 채워짐, 비소유자에게는 노출하지 않음)',
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        groupId: { type: 'string', format: 'uuid' },
+        groupName: { type: 'string' },
+      },
+    },
+  })
+  sharedGroups?: { groupId: string; groupName: string }[];
 }

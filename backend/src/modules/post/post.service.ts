@@ -42,6 +42,7 @@ import { PresenceService } from './collab/presence.service';
 import { PostDraftGateway } from './post-draft.gateway';
 import { GroupActivityService } from '@/modules/group/service/group-activity.service';
 import { GroupActivityType } from '@/enums/group-activity-type.enum';
+import { PostGroupShareService } from './post-group-share.service';
 
 @Injectable()
 export class PostService {
@@ -68,6 +69,7 @@ export class PostService {
     private readonly postDraftGateway: PostDraftGateway,
     private readonly groupActivityService: GroupActivityService,
     private readonly mediaService: MediaService,
+    private readonly postGroupShareService: PostGroupShareService,
   ) {}
 
   /**
@@ -257,7 +259,7 @@ export class PostService {
   /**
    * 게시글 상세 조회: Post 기본 정보에 블록과 기여자 정보를 합쳐 반환한다.
    */
-  async findOne(postId: string, requesterId: string) {
+  async findOne(postId: string, requesterId: string, viewGroupId?: string) {
     const post = await this.postRepository.findOne({
       where: { id: postId, deletedAt: IsNull() },
       relations: ['ownerUser', 'group'],
@@ -275,14 +277,38 @@ export class PostService {
       (contributor): contributor is PostContributor & { user: User } =>
         Boolean(contributor.user),
     );
+
+    // 기여자 닉네임/프로필을 어느 그룹 기준으로 보여줄지 결정한다.
+    // - GROUP scope 글: 그 글이 속한 그룹.
+    // - 공유된 PERSONAL 글: 호출자가 넘긴 viewGroupId — 단, (1) 요청자가 실제로 그 그룹의 멤버이고
+    // (2) 그 글이 실제로 그 그룹에 공유돼 있는지까지 둘 다 검증해서, 요청자가 속하지 않은 임의의 그룹 ID를
+    // 넘겨 그 그룹의 이름/닉네임/프로필이 새는 것을 막는다.
+    let contributorGroupId: string | null = null;
+    let isSharedToViewGroup = false;
+    if (post.scope === PostScope.GROUP && post.groupId) {
+      contributorGroupId = post.groupId;
+    } else if (post.scope === PostScope.PERSONAL && viewGroupId) {
+      const requesterMembership = await this.groupMemberRepository.findOne({
+        where: { groupId: viewGroupId, userId: requesterId },
+        select: { userId: true },
+      });
+      if (requesterMembership) {
+        isSharedToViewGroup = await this.postGroupShareService.isSharedToGroup(
+          postId,
+          viewGroupId,
+        );
+        if (isSharedToViewGroup) contributorGroupId = viewGroupId;
+      }
+    }
+
     const groupMemberMap = new Map<
       string,
       { nicknameInGroup?: string | null; profileMediaId?: string | null }
     >();
-    if (post.scope === PostScope.GROUP && post.groupId) {
+    if (contributorGroupId) {
       const members = await this.groupMemberRepository.find({
         where: activeContributors.map((c) => ({
-          groupId: post.groupId as string,
+          groupId: contributorGroupId,
           userId: c.userId,
         })),
         select: ['userId', 'nicknameInGroup', 'profileMediaId'],
@@ -334,11 +360,45 @@ export class PostService {
       hasActiveEditDraft = Boolean(activeEditDraft);
     }
 
+    // 공유 대상 그룹 "전체 목록"은 원작성자에게만 노출한다 — 그룹 A의
+    // 그룹원이 이 글이 그룹 B에도 공유됐다는 사실까지 알 필요는 없다.
+    // 다만 지금 보고 있는 그 그룹(viewGroupId) 하나에 대해서는, 그룹원도
+    // "이 글이 우리 그룹에 공유됐다"는 뱃지를 볼 수 있어야 한다 — 이미
+    // 그 그룹 피드에서 봤기 때문에 새로 새는 정보가 아니다.
+    let isSharedPost = false;
+    let sharedGroups: { groupId: string; groupName: string }[] | undefined;
+    if (post.scope === PostScope.PERSONAL) {
+      if (isOwner) {
+        sharedGroups = await this.postGroupShareService.listSharedGroups(
+          postId,
+          requesterId,
+        );
+        isSharedPost = sharedGroups.length > 0;
+      } else if (viewGroupId && isSharedToViewGroup) {
+        const viewGroup = await this.groupRepository.findOne({
+          where: { id: viewGroupId },
+          select: ['id', 'name'],
+        });
+        sharedGroups = viewGroup
+          ? [{ groupId: viewGroupId, groupName: viewGroup.name }]
+          : [];
+        isSharedPost = true;
+      } else {
+        isSharedPost =
+          await this.postGroupShareService.isPostSharedWithUserViaAnyGroup(
+            postId,
+            requesterId,
+          );
+      }
+    }
+
     const dto: PostDetailDto = {
       id: post.id,
       scope: post.scope,
       ownerUserId: post.ownerUserId,
       groupId: post.groupId ?? null,
+      groupName:
+        post.scope === PostScope.GROUP ? (post.group?.name ?? null) : null,
       title: post.title,
       createdAt: post.createdAt,
       updatedAt: post.updatedAt,
@@ -356,18 +416,29 @@ export class PostService {
       permission,
       hasActiveEditDraft,
       shareToken: post.shareToken ?? null,
+      isSharedPost,
+      sharedGroups,
     };
     return dto;
   }
 
   async ensureCanViewPost(postId: string, userId: string): Promise<void> {
-    // 본인 글이면 통과
     const post = await this.postRepository.findOne({
       where: { id: postId, deletedAt: IsNull() },
       select: { id: true, ownerUserId: true, groupId: true, scope: true },
     });
     if (!post) throw new NotFoundException('Post not found');
-    if (post.ownerUserId === userId) return;
+    if (!(await this.canUserViewPost(post, userId))) {
+      throw new ForbiddenException('You do not have access to this post');
+    }
+  }
+
+  private async canUserViewPost(
+    post: Pick<Post, 'id' | 'ownerUserId' | 'scope' | 'groupId'>,
+    userId: string,
+  ): Promise<boolean> {
+    // 본인 글이면 통과
+    if (post.ownerUserId === userId) return true;
 
     // 내 그룹 글이면 통과
     if (post.scope === PostScope.GROUP && post.groupId) {
@@ -375,17 +446,25 @@ export class PostService {
         where: { groupId: post.groupId, userId },
         select: { userId: true },
       });
-      if (member) return;
+      if (member) return true;
+    }
+
+    // 개인 글이 내 그룹에 공유되어 있으면 통과
+    if (post.scope === PostScope.PERSONAL) {
+      const shared =
+        await this.postGroupShareService.isPostSharedWithUserViaAnyGroup(
+          post.id,
+          userId,
+        );
+      if (shared) return true;
     }
 
     // 기여자면 통과
     const contributor = await this.postContributorRepository.findOne({
-      where: { postId, userId },
+      where: { postId: post.id, userId },
       select: { userId: true },
     });
-    if (!contributor) {
-      throw new ForbiddenException('You do not have access to this post');
-    }
+    return Boolean(contributor);
   }
 
   private async ensureCanManageShare(

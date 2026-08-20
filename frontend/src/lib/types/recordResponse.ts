@@ -46,6 +46,8 @@ export interface RecordPreview {
   rating: RatingValue['rating'] | null;
   blocks: Block[];
   hasActiveEditDraft?: boolean;
+  isSharedPost?: boolean;
+  sharedGroups?: { groupId: string; groupName: string }[];
 }
 
 export interface PaginatedRecordPreviewResponse {
