@@ -1,19 +1,21 @@
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useLayoutEffect, useState } from 'react';
 import { LayoutGrid, Newspaper } from 'lucide-react';
 import WeekCalendar from '@/app/(main)/_components/WeekCalendar';
 import RecordTimelineFeed from '@/app/(main)/_components/RecordTimelineFeed';
 import { RecordTimelineProvider } from '@/app/(main)/_components/RecordTimelineProvider';
 import MonthRecordsInfinite from '@/app/(post)/_components/MonthRecordsInfinite';
 import { Suspense } from 'react';
-import HomePageSkeleton from '@/app/(main)/_components/HomePageSkeleton';
+import { RecordItemSkeleton } from '@/app/(main)/_components/HomePageSkeleton';
 import WeekCalendarSkeleton from '@/app/(main)/_components/WeekCalendarSkeleton';
 import { useQuery } from '@tanstack/react-query';
 import { groupCurrentMembersOption } from '@/lib/api/group';
 import { formatDateISO } from '@/lib/date';
 import AssetImage from '@/components/AssetImage';
 import Image from 'next/image';
+import ScrollToTopButton from '@/components/ScrollToTopButton';
 
 interface GroupMainTabsProps {
   groupId: string;
@@ -26,6 +28,25 @@ export default function GroupMainTabs({ groupId }: GroupMainTabsProps) {
 
   const { data: membersData } = useQuery(groupCurrentMembersOption(groupId));
   const members = membersData?.members ?? [];
+
+  // sticky 요소는 다른 sticky 요소와 자동으로 겹치지 않게 쌓이지 않는다 —
+  // 이 캘린더를 GroupHeader 바로 아래에 고정하려면 GroupHeader의 실제
+  // 높이를 top으로 직접 넘겨야 한다. 그룹 이름 줄바꿈/반응형 브레이크포인트/
+  // 네이티브 safe-area에 따라 높이가 바뀌므로 ResizeObserver로 추적한다.
+  const [groupHeaderHeight, setGroupHeaderHeight] = useState(0);
+
+  useLayoutEffect(() => {
+    const header = document.getElementById('group-header-sticky');
+    if (!header) return;
+
+    const updateHeight = () =>
+      setGroupHeaderHeight(header.getBoundingClientRect().height);
+    updateHeight();
+
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div className="h-full flex flex-col gap-4">
@@ -104,17 +125,31 @@ export default function GroupMainTabs({ groupId }: GroupMainTabsProps) {
       ) : (
         <RecordTimelineProvider key={groupId} initialDate={formatDateISO()}>
           <div className="min-h-0 flex-1 flex flex-col gap-4 pb-bottom-nav">
-            <div className="-mx-4 sm:-mx-6">
-              <Suspense fallback={<WeekCalendarSkeleton />}>
-                <WeekCalendar monthBasePath={`/group/${groupId}`} />
-              </Suspense>
-            </div>
-            <Suspense fallback={<HomePageSkeleton />}>
+            <Suspense
+              fallback={<WeekCalendarSkeleton className="-mx-4 sm:-mx-6" />}
+            >
+              <WeekCalendar
+                monthBasePath={`/group/${groupId}`}
+                className="-mx-4 sm:-mx-6"
+                stickyTopClassName="top-0"
+                stickyTopPx={groupHeaderHeight}
+              />
+            </Suspense>
+            <Suspense
+              fallback={
+                <div className="space-y-3 sm:space-y-4 w-full">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <RecordItemSkeleton key={i} />
+                  ))}
+                </div>
+              }
+            >
               <RecordTimelineFeed groupId={groupId} imageLayout="responsive" />
             </Suspense>
           </div>
         </RecordTimelineProvider>
       )}
+      <ScrollToTopButton stackedAboveDraftButton />
     </div>
   );
 }

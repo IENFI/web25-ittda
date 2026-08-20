@@ -5,12 +5,14 @@ import {
   register as fcmRegister,
   unregister,
   onRegistered,
+  onMessage,
 } from 'firebase/messaging';
-import type { Messaging } from 'firebase/messaging';
+import type { Messaging, MessagePayload } from 'firebase/messaging';
 import { getFirebaseMessaging } from '@/lib/firebase';
 import { registerFcmToken } from '@/lib/api/notification';
 
 const VAPID_KEY = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
+const FCM_SW_SCOPE = '/firebase-cloud-messaging-push-scope';
 
 const isNativePlatform = () =>
   typeof window !== 'undefined' &&
@@ -28,31 +30,69 @@ export async function registerAndroidToken(): Promise<boolean> {
   const result = await PushNotifications.requestPermissions();
   if (result.receive !== 'granted') return false;
 
-  return await Promise.race([
-    new Promise<boolean>((resolve) => {
-      PushNotifications.addListener(
-        'registration',
-        async ({ value: token }) => {
-          const success = await registerFcmToken(token, 'android')
-            .then(() => true)
-            .catch(() => false);
-          await PushNotifications.removeAllListeners();
-          resolve(success);
-        },
-      );
-      PushNotifications.addListener('registrationError', async () => {
-        await PushNotifications.removeAllListeners();
-        resolve(false);
-      });
-      PushNotifications.register();
-    }),
-    new Promise<boolean>((resolve) =>
-      setTimeout(() => {
-        PushNotifications.removeAllListeners();
-        resolve(false);
-      }, 10000),
-    ),
-  ]);
+  let registrationHandle: { remove: () => Promise<void> } | undefined;
+  let registrationErrorHandle: { remove: () => Promise<void> } | undefined;
+  let settled = false;
+
+  // .remove() 실패는 무시 — best-effort 정리라 실패해도 settle() 흐름을 막으면 안 됨.
+  const cleanup = () =>
+    Promise.all([
+      registrationHandle?.remove(),
+      registrationErrorHandle?.remove(),
+    ]).catch(() => {});
+
+  return new Promise<boolean>((resolve) => {
+    const settle = async (success: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      await cleanup();
+      resolve(success);
+    };
+
+    const timeoutId = setTimeout(() => {
+      void settle(false);
+    }, 10000);
+
+    (async () => {
+      try {
+        const handle = await PushNotifications.addListener(
+          'registration',
+          async ({ value: token }) => {
+            if (settled) return;
+            const success = await registerFcmToken(token, 'android')
+              .then(() => true)
+              .catch(() => false);
+            await settle(success);
+          },
+        );
+
+        if (settled) {
+          await handle.remove().catch(() => {});
+          return;
+        }
+        registrationHandle = handle;
+
+        const errorHandle = await PushNotifications.addListener(
+          'registrationError',
+          async () => {
+            if (settled) return;
+            await settle(false);
+          },
+        );
+        if (settled) {
+          await errorHandle.remove().catch(() => {});
+          return;
+        }
+        registrationErrorHandle = errorHandle;
+
+        await PushNotifications.register();
+      } catch {
+        // addListener/register가 reject하면(unhandled rejection 방지) 실패로 확정.
+        await settle(false);
+      }
+    })();
+  });
 }
 
 // onRegistered 콜백을 await 가능한 형태로 변환
@@ -81,7 +121,7 @@ async function getAndRegisterWebFcmToken() {
 
   const swReg = await navigator.serviceWorker.register(
     '/firebase-messaging-sw.js',
-    { scope: '/firebase-cloud-messaging-push-scope' },
+    { scope: FCM_SW_SCOPE },
   );
 
   if (!swReg.active) {
@@ -140,6 +180,24 @@ export async function requestAndRegisterWebToken() {
   await getAndRegisterWebFcmToken();
 }
 
+function showForegroundNotification(payload: MessagePayload) {
+  if (!('serviceWorker' in navigator)) return;
+  if (Notification.permission !== 'granted') return;
+
+  const title = payload.data?.title ?? '잇다 알림';
+  const body = payload.data?.body ?? '';
+
+  navigator.serviceWorker.getRegistration(FCM_SW_SCOPE).then((registration) => {
+    if (!registration) return;
+    registration.showNotification(title, {
+      body,
+      icon: payload.data?.imageUrl || '/web-app-icon-192x192.png',
+      badge: '/web-app-icon-192x192.png',
+      data: payload.data ?? {},
+    });
+  });
+}
+
 export function usePushNotification(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
@@ -149,5 +207,27 @@ export function usePushNotification(enabled: boolean) {
       ? registerAndroidToken
       : registerWebToken;
     register().catch(() => {});
+  }, [enabled]);
+
+  // 포그라운드 알림 — 탭이 활성 상태여도 백그라운드와 동일하게 알림이
+  // 뜨도록 한다. 네이티브(Capacitor) 안드로이드는 자체 푸시 플러그인으로
+  // 별도 처리되므로 여기선 웹(PWA/브라우저)에서만 등록한다.
+  useEffect(() => {
+    if (!enabled) return;
+    if (typeof window === 'undefined') return;
+    if (isNativePlatform()) return;
+
+    let unsubscribe: (() => void) | undefined;
+    let cancelled = false;
+
+    getFirebaseMessaging().then((messaging) => {
+      if (!messaging || cancelled) return;
+      unsubscribe = onMessage(messaging, showForegroundNotification);
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }, [enabled]);
 }
