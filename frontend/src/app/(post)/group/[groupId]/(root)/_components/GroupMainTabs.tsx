@@ -29,17 +29,29 @@ export default function GroupMainTabs({ groupId }: GroupMainTabsProps) {
   const { data: membersData } = useQuery(groupCurrentMembersOption(groupId));
   const members = membersData?.members ?? [];
 
-  // sticky 요소는 다른 sticky 요소와 자동으로 겹치지 않게 쌓이지 않는다 —
-  // 이 캘린더를 GroupHeader 바로 아래에 고정하려면 GroupHeader의 실제
-  // 높이를 top으로 직접 넘겨야 한다. 그룹 이름 줄바꿈/반응형 브레이크포인트/
-  // 네이티브 safe-area에 따라 높이가 바뀌므로 ResizeObserver로 추적한다.
-  const [groupHeaderHeight, setGroupHeaderHeight] = useState(0);
+  const [calendarTop, setCalendarTop] = useState(0);
 
   useLayoutEffect(() => {
     let cancelled = false;
     let rafId: number | undefined;
     let observer: ResizeObserver | undefined;
+    let ticking = false;
     let attempts = 0;
+
+    const measure = () => {
+      const header = document.getElementById('group-header-sticky');
+      if (!header) return;
+      setCalendarTop(header.getBoundingClientRect().bottom);
+    };
+
+    const onScrollOrResize = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        measure();
+        ticking = false;
+      });
+    };
 
     const attach = () => {
       if (cancelled) return;
@@ -49,11 +61,11 @@ export default function GroupMainTabs({ groupId }: GroupMainTabsProps) {
         return;
       }
 
-      const updateHeight = () =>
-        setGroupHeaderHeight(header.getBoundingClientRect().height);
-      updateHeight();
-      observer = new ResizeObserver(updateHeight);
+      measure();
+      observer = new ResizeObserver(measure);
       observer.observe(header);
+      window.addEventListener('scroll', onScrollOrResize, { passive: true });
+      window.addEventListener('resize', onScrollOrResize);
     };
     attach();
 
@@ -61,11 +73,13 @@ export default function GroupMainTabs({ groupId }: GroupMainTabsProps) {
       cancelled = true;
       if (rafId !== undefined) cancelAnimationFrame(rafId);
       observer?.disconnect();
+      window.removeEventListener('scroll', onScrollOrResize);
+      window.removeEventListener('resize', onScrollOrResize);
     };
   }, []);
 
   return (
-    <div className="h-full flex flex-col gap-4">
+    <div className="h-full flex flex-col gap-4 ">
       <div className="flex items-center justify-between">
         <div className="flex -space-x-2">
           {members.slice(0, 4).map((m) => (
@@ -147,8 +161,8 @@ export default function GroupMainTabs({ groupId }: GroupMainTabsProps) {
               <WeekCalendar
                 monthBasePath={`/group/${groupId}`}
                 className="-mx-4 sm:-mx-6"
-                stickyTopClassName="top-0"
-                stickyTopPx={groupHeaderHeight}
+                stickyTopPx={calendarTop}
+                blurred={false}
               />
             </Suspense>
             <Suspense

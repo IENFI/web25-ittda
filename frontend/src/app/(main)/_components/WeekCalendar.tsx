@@ -19,11 +19,15 @@ export default function WeekCalendar({
   className,
   stickyTopClassName,
   stickyTopPx,
+  sticky = true,
+  blurred = true,
 }: {
   monthBasePath?: string;
   className?: string;
   stickyTopClassName?: string;
-  stickyTopPx?: number;
+  stickyTopPx?: number | string;
+  sticky?: boolean;
+  blurred?: boolean;
 }) {
   const router = useRouter();
   const { activeDate, requestJump } = useRecordTimeline();
@@ -146,12 +150,19 @@ export default function WeekCalendar({
     <div
       id="week-calendar-sticky"
       className={cn(
-        'sticky z-40 overflow-hidden',
-        'bg-white/80 dark:bg-[#121212]/80 backdrop-blur-xl',
-        stickyTopClassName ?? (hidden ? 'top-0' : 'top-16 sm:top-18'),
+        sticky && [
+          'sticky z-40',
+          blurred
+            ? 'bg-white/80 dark:bg-[#121212]/80 backdrop-blur-xl'
+            : 'bg-white dark:bg-[#121212]',
+          stickyTopPx === undefined &&
+            (stickyTopClassName ?? (hidden ? 'top-0' : 'top-16 sm:top-18')),
+        ],
         className,
       )}
-      style={stickyTopPx !== undefined ? { top: stickyTopPx } : undefined}
+      style={
+        sticky && stickyTopPx !== undefined ? { top: stickyTopPx } : undefined
+      }
     >
       <div className="px-4 py-2 sm:px-6 flex items-center gap-1 group cursor-pointer self-start">
         <span
@@ -170,7 +181,7 @@ export default function WeekCalendar({
       </div>
       {/* 지금 스크롤로 보고 있는 날짜를 보여주는 얇은 인덱스 — 탭하면 그
             지점으로 스크롤, 스크롤하면 반대로 여기 활성 표시가 따라온다. */}
-      <div className="relative h-16 border-b dark:border-white/5 border-gray-100">
+      <div className="relative h-16 overflow-x-hidden border-b dark:border-white/5 border-gray-100">
         <AnimatePresence initial={false} custom={direction} mode="popLayout">
           <motion.div
             key={currentWeekStart.toISOString()}
